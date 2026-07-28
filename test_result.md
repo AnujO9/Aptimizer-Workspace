@@ -101,3 +101,95 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Continue Aptimizer after V1 (Auth/RBAC, Projects, Plot, Apartment Planning, Calculations, Parking,
+  Quantities, BOQ, Cost, Utilities, Compliance, Reports — already tested, must stay untouched).
+  Build the two PRD backlog items: (1) GIS & Site Intelligence V2 reading the existing plot polygon —
+  Overpass feature detection, Open-Elevation terrain/slope, flood risk, wind, sun path, accessibility,
+  site suitability score, buildability flags, AI site analysis via the Emergent Universal LLM key, and
+  GIS↔Plot sync; (2) 3D interactive UI with react-three-fiber reading the same MongoDB project document —
+  terrain, tower massing, detailed floor slabs, 3D floor plan, floor slider, section cut, layer toggles,
+  compliance highlighting, selection side panel, instanced meshes and a simple 2D fallback.
+
+backend:
+  - task: "GIS analysis endpoint (Overpass + Open-Elevation + flood/wind/sun/accessibility/suitability/buildability)"
+    implemented: true
+    working: true
+    file: "backend/gis.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "POST /api/projects/{id}/gis/analyse persists results at project.gis and logs gis.analysed. GET /api/projects/{id}/gis returns stored result + stale flag from polygon signature. 11/11 tests in backend/tests/gis_test.py pass; live run on the default Bengaluru plot returned 120 buildings, 120 roads, slope 3.04%, flood high, accessibility 94, suitability 74.6 in ~12s. Overpass has 3 mirror fallbacks; graceful degradation if a source fails."
+
+  - task: "AI site analysis via Claude Sonnet 4.6 (Emergent Universal Key)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "POST /api/projects/{id}/gis/ai-summary builds context from suitability/buildability/terrain/flood/access/wind/sun and stores markdown at project.gis.ai_summary. Returns 400 before analysis is run, 503 without a key. Verified live output quoting real numbers."
+
+  - task: "V1 endpoints regression"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Only additive changes: gis routes + 'gis' added to the PUT allow-list. backend_test.py 32/32 still pass. Note: a duplicated block at the end of server.py (pre-existing) was removed so the module imports cleanly."
+
+frontend:
+  - task: "GIS Intelligence module UI"
+    implemented: true
+    working: true
+    file: "frontend/src/modules/GisModule.jsx, components/GisMap.jsx, components/SiteDiagrams.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Radius input + run/re-run, stale banner, source status line, Leaflet map with per-layer toggles over satellite/OSM, suitability breakdown bars, buildability flags, elevation profile chart, flood panel, sun-path polar diagram with time slider, wind rose, accessibility notes, AI summary render. Verified by screenshot; needs testing_agent interaction depth."
+
+  - task: "3D visualisation module"
+    implemented: true
+    working: true
+    file: "frontend/src/modules/ThreeDModule.jsx, frontend/src/lib/scene.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: true
+        -agent: "main"
+        -comment: "Site/massing/floor-plan views, GIS terrain heightfield, plot outline + road edge + compass, sun slider + season, instanced buildings/floor slabs/parking slots, tower click-to-isolate, detailed slabs coloured by unit type, 3D floor plan with walls/door gaps/windows, floor slider, section cut, walk mode, layer toggles, violation highlighting, selection side panel, simple 2D fallback. Screenshots confirm all three views render."
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 2
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "GIS Intelligence module UI"
+    - "3D visualisation module"
+    - "GIS analysis endpoint"
+    - "AI site analysis"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: "V2 complete. Backend: 43/43 pytest tests pass (32 V1 + 11 new GIS). Please verify the two new frontend modules end to end (nav-module-gis, nav-module-3d) and confirm no V1 regression. GIS analysis takes ~10-20s (external APIs) so allow generous waits. AI summary takes ~15-30s."

@@ -46,15 +46,30 @@ Stack: React + FastAPI + MongoDB + JWT auth, Leaflet/OSM maps.
 - Reports: 7 PDF reports + BOQ Excel, all generated live from project data.
 - QA: 32/32 backend pytest tests pass; frontend flows verified (iteration_1.json, 100%).
 
+## Implemented — V2 (28 Jul 2026)
+- GIS & Site Intelligence module (`backend/gis.py`, `modules/GisModule.jsx`): Overpass feature detection
+  (buildings/roads/green/water/transit, 3 mirror endpoints with fallback), Open-Elevation terrain grid +
+  diagonal profile + slope class, rule-based flood risk (low-lying vs surrounding ring + water proximity),
+  regional wind dataset + wind rose, NOAA sun-path (solstices/equinox) with per-facade daylight guidance,
+  accessibility scoring, weighted 4-factor site suitability score, buildability constraint flags,
+  and an AI site analysis via Claude Sonnet 4.6 (Emergent Universal Key).
+  Stored on the same project document under `project.gis`; `stale` flag when the plot polygon changes.
+- 3D interactive layer (`modules/ThreeDModule.jsx`, `lib/scene.js`, react-three-fiber + drei):
+  GIS-driven terrain heightfield, plot outline + road-access edge + compass/orientation, animated sun
+  (time-of-day + season), instanced nearby buildings / floor slabs / parking slots, tower massing with
+  click-to-isolate, detailed floor-slab view colour-coded by unit type, 3D floor plan with extruded
+  walls + door openings + window bands, floor slider, section cut, walk mode (pointer lock + WASD),
+  layer toggles (parking/balconies/common/violations), compliance-violation red highlighting per tower,
+  selection side panel with live carpet area / cost per m² / compliance, and a simple 2D fallback toggle.
+- Tests: `backend/tests/gis_test.py` (11 tests) + existing `backend_test.py` (32) all pass.
+
 ## Backlog
-P0 — GIS & Site Intelligence (V2): OSM overlays (buildings/roads/green/water via Overpass), elevation
-     & slope (Open-Elevation), flood risk, wind & sun path, accessibility, site suitability score,
-     buildability analysis, AI site summary (Claude Sonnet 4.6 / GPT-5.5), GIS → plot auto-population.
-P0 — 3D interactive layer (react-three-fiber): terrain plane, tower massing, floor slabs, 3D floor plan,
-     orbit/walk mode, floor slider, section cut, layer toggles, compliance highlights, simple-view fallback.
 P1 — Google Maps JS API layer (needs paid key), project thumbnails, Google social login.
+P1 — GIS: transit isochrones, infrastructure (power/water lines) inference from OSM tags.
 P2 — Per-floor room variants (non-typical floors), multi-currency rate libraries, DXF/CAD export.
+P2 — 3D: real tower footprint polygons (draw on plan), shadow-study export, GPU instancing for rooms.
 
 ## Next tasks
-1. GIS module (Overpass + elevation + suitability score + AI summary) feeding Plot Management.
-2. Three.js 3D visualisation reading the same project document.
+1. Scheme comparison view (two saved versions side by side: FAR, units, cost/flat, compliance).
+2. Include GIS suitability + buildability in the Executive Summary PDF.
+

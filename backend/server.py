@@ -20,6 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import auth as authlib
 import engine
+import gis as gislib
 import reports as reportlib
 from defaults import default_project, default_tower
 
@@ -269,7 +270,7 @@ async def patch_project(project_id: str, body: ProjectPatch, user: dict = Depend
     await load_project(project_id, user, write=True)
     allowed = {"name", "client", "location", "plot_reference", "status", "plot", "towers", "parking",
                "config", "quantity_ratios", "rates", "labour_rates", "equipment_rates",
-               "utility_config", "compliance_rules"}
+               "utility_config", "compliance_rules", "gis"}
     updates = {k: v for k, v in body.updates.items() if k in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -314,10 +315,80 @@ class AnalyseIn(BaseModel):
     project: Dict[str, Any]
 
 
+class GisIn(BaseModel):
+    radius_m: int = 500
+
+
 @api.post("/analyse")
 async def analyse_live(body: AnalyseIn, user: dict = Depends(get_current_user)):
     """Stateless calculation endpoint for live editing before save."""
     return engine.analyse(body.project)
+
+
+# ---------------------------------------------------------------- GIS & site intelligence
+@api.get("/projects/{project_id}/gis")
+async def get_gis(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user)
+    stored = proj.get("gis")
+    coords = (proj.get("plot") or {}).get("coordinates") or []
+    stale = bool(stored) and stored.get("polygon_signature") != gislib._signature(coords)
+    return {"gis": stored, "stale": stale, "has_polygon": len(coords) >= 3}
+
+
+@api.post("/projects/{project_id}/gis/analyse")
+async def run_gis(project_id: str, body: GisIn, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    try:
+        result = await gislib.analyse_site(proj, body.radius_m)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.projects.update_one({"_id": oid(project_id)},
+                                 {"$set": {"gis": result, "updated_at": now_iso()}})
+    await log_activity(project_id, user, "gis.analysed",
+                       f"radius {result['radius_m']} m · suitability {result['suitability']['score']}")
+    return {"gis": result, "stale": False, "has_polygon": True}
+
+
+@api.post("/projects/{project_id}/gis/ai-summary")
+async def gis_ai_summary(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    stored = proj.get("gis")
+    if not stored:
+        raise HTTPException(status_code=400, detail="Run the site analysis before generating an AI summary")
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="LLM key not configured")
+
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    import json as _json
+
+    context = gislib.ai_context(proj, stored)
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"gis-{project_id}",
+        system_message=(
+            "You are a senior civil engineer and site planner advising on apartment development feasibility. "
+            "Write a concise, technical site analysis in markdown with these sections: "
+            "**Verdict** (2 sentences), **Strengths** (bullets), **Weaknesses & Risks** (bullets), "
+            "**Design & Engineering Recommendations** (bullets referencing slope, drainage, orientation, "
+            "access and ventilation). Quote the numbers you are given. Never invent data that is not provided; "
+            "if a dataset is unavailable, say so plainly. Keep it under 400 words."
+        ),
+    ).with_model("anthropic", "claude-sonnet-4-6")
+
+    try:
+        text = await chat.send_message(UserMessage(
+            text="Analyse this site using only the JSON data below.\n\n```json\n"
+                 + _json.dumps(context, indent=1) + "\n```"))
+    except Exception as exc:
+        logger.exception("AI site analysis failed")
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+
+    summary = {"text": text, "model": "claude-sonnet-4-6", "generated_at": now_iso()}
+    await db.projects.update_one({"_id": oid(project_id)},
+                                 {"$set": {"gis.ai_summary": summary, "updated_at": now_iso()}})
+    await log_activity(project_id, user, "gis.ai_summary", "Claude Sonnet 4.6 site analysis generated")
+    return summary
 
 
 # ---------------------------------------------------------------- versions
