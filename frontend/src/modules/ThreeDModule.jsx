@@ -181,6 +181,8 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
       <Html position={[tower.x, visibleFloors * tower.floorHeight + 4, tower.z]} center>
         <div
           onClick={onSelect}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm border cursor-pointer ${
             violations.length ? "bg-red-50 border-red-300 text-red-700" : "bg-white/95 border-slate-200"
           }`}
@@ -306,6 +308,8 @@ const Floor3D = ({ tower, floor, onSelectRoom, selectedRoomId, violated }) => {
             <Html position={[cx, 3.2, cz]} center>
               <div
                 onClick={() => onSelectRoom(r)}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 className="text-[9px] font-mono bg-white/95 border border-slate-200 px-1 rounded-sm whitespace-nowrap cursor-pointer hover:border-blue-500"
                 data-testid={`room3d-${r.id}`}
               >
@@ -523,6 +527,17 @@ export default function ThreeDModule({ project, analysis }) {
               onValueChange={([v]) => setFloor(v)}
               data-testid="three-floor-slider"
             />
+            <div className="flex gap-1 mt-1.5">
+              <Button size="sm" variant="outline" className="h-6 px-2 rounded-sm text-[11px]"
+                data-testid="three-floor-down" onClick={() => setFloor((f) => Math.max(1, f - 1))}>
+                − floor
+              </Button>
+              <Button size="sm" variant="outline" className="h-6 px-2 rounded-sm text-[11px]"
+                data-testid="three-floor-up"
+                onClick={() => setFloor((f) => Math.min(tower?.floors || 1, f + 1))}>
+                + floor
+              </Button>
+            </div>
           </div>
           <div>
             <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
@@ -536,6 +551,14 @@ export default function ThreeDModule({ project, analysis }) {
             <div className="flex items-center gap-2">
               <Slider min={5} max={19} step={0.5} value={[hour]} onValueChange={([v]) => setHour(v)}
                 className="flex-1" data-testid="three-sun-slider" />
+              <Button size="sm" variant="outline" className="h-8 px-2 rounded-sm text-[11px]"
+                data-testid="three-sun-earlier" onClick={() => setHour((h) => Math.max(5, h - 1))}>
+                −1h
+              </Button>
+              <Button size="sm" variant="outline" className="h-8 px-2 rounded-sm text-[11px]"
+                data-testid="three-sun-later" onClick={() => setHour((h) => Math.min(19, h + 1))}>
+                +1h
+              </Button>
               <Select value={season} onValueChange={setSeason}>
                 <SelectTrigger className="h-8 w-36 rounded-sm text-xs" data-testid="three-season-select">
                   <SelectValue />

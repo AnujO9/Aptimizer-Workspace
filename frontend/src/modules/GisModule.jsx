@@ -69,7 +69,12 @@ export default function GisModule({ project, projectId, readOnly }) {
       setStale(false);
       toast.success(`Site analysed — suitability ${data.gis.suitability.score}/100`);
     } catch (e) {
-      toast.error(apiError(e.response?.data?.detail));
+      const status = e.response?.status;
+      toast.error(
+        status === 502 || status === 504
+          ? "Public map/elevation services are busy — please run the analysis again."
+          : apiError(e.response?.data?.detail)
+      );
     } finally {
       setBusy(false);
     }
