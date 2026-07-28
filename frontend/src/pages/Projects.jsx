@@ -8,7 +8,7 @@ import { TopBar } from "@/components/TopBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { dt, int, money, num } from "@/lib/format";
 
 export default function Projects() {
@@ -79,6 +79,7 @@ export default function Projects() {
               <DialogContent className="bg-white">
                 <DialogHeader>
                   <DialogTitle>New project</DialogTitle>
+                  <DialogDescription>Metadata for the project. Plot, towers and rates can be edited after creation.</DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3">
                   {[
