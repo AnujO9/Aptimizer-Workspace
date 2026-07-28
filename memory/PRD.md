@@ -61,7 +61,11 @@ Stack: React + FastAPI + MongoDB + JWT auth, Leaflet/OSM maps.
   walls + door openings + window bands, floor slider, section cut, walk mode (pointer lock + WASD),
   layer toggles (parking/balconies/common/violations), compliance-violation red highlighting per tower,
   selection side panel with live carpet area / cost per m² / compliance, and a simple 2D fallback toggle.
-- Tests: `backend/tests/gis_test.py` (11 tests) + existing `backend_test.py` (32) all pass.
+- Tests: `backend/tests/gis_test.py` (11 tests) + `rbac_v2_test.py` (2) + existing `backend_test.py` (32)
+  = **45/45 pass**. Frontend verified by testing_agent in iterations 2 and 3 (see `/app/test_result.md`
+  and `/app/test_reports/iteration_{2,3}.json`); the only two findings (drei `<Html>` label click
+  pointer-capture and slider keyboard support) were fixed with stopPropagation handlers and explicit
+  floor/sun stepper buttons.
 
 ## Backlog
 P1 — Google Maps JS API layer (needs paid key), project thumbnails, Google social login.

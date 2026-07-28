@@ -2,7 +2,7 @@
 import os
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://aptimizer-build.preview.emergentagent.com").rstrip("/")
 API = f"{BASE}/api"
 
 

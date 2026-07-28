@@ -193,3 +193,12 @@ test_plan:
 agent_communication:
     -agent: "main"
     -message: "V2 complete. Backend: 43/43 pytest tests pass (32 V1 + 11 new GIS). Please verify the two new frontend modules end to end (nav-module-gis, nav-module-3d) and confirm no V1 regression. GIS analysis takes ~10-20s (external APIs) so allow generous waits. AI summary takes ~15-30s."
+    -agent: "testing"
+    -message: "Iteration 2 (/app/test_reports/iteration_2.json): backend 45/45 (gis_test 11, backend_test 32, new rbac_v2_test 2). GIS UI verified end to end (suitability 74.6, slope 3.04%, flood high, 120 buildings, sources ok, stale banner after plot vertex edit, AI summary 2552 chars in ~18s). 3D verified (all 3 views, detailed slabs, section cut, walk mode, layer toggles, simple-2D fallback, compliance→3D red highlight when stair-width min set to 3). RBAC: viewer 200 on GET /gis, 403 on POST analyse/ai-summary. Two automation-only issues: drei <Html> label clicks needed el.click(); sliders ignored keyboard arrows."
+    -agent: "main"
+    -message: "Fixed both: added onPointerDown/onPointerUp stopPropagation to the tower/room label <Html> divs, and added explicit stepper buttons (three-floor-down/up, three-sun-earlier/later). GIS run errors on 502/504 now show a retry hint. Fixed a missing default backend URL in rbac_v2_test.py."
+    -agent: "testing"
+    -message: "Iteration 3 (/app/test_reports/iteration_3.json): FIX 1 PASS — plain .click() on tower-label-* opens selection-tower (Tower A · 12F · 36 m · 48 units · carpet 4,512 m² · built-up 6,431 m² · ₹14,857/m² · est ₹9.55 Cr · compliance pass) and room3d-* opens selection-room (Living/Dining · 27.00 m² · 6.0×4.5 m · ₹4.01 L · floor 1 of 12 · 2BHK · 12/12 pass). FIX 2 PASS — steppers update the floor and sun labels; slider drag still works. Regression PASS — all 3 views render, executive PDF downloads (6612 bytes). No open issues."
+    -agent: "main"
+    -message: "Full suite re-run after the test-file fix: 45/45 pass (pytest -o addopts= to avoid xdist fixture races). V2 complete: GIS & Site Intelligence + 3D visualisation, both reading/writing the same project document. No V1 code paths changed apart from additive GIS routes and the 'gis' PUT allow-list entry."
+
