@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Map, Building2, Calculator, Car, Package, ClipboardList, Wallet, Droplets, ShieldCheck, FileText, History,
-  Globe2, Box,
+  Globe2, Box, Ruler,
 } from "lucide-react";
 import { api, apiError } from "@/lib/api";
 import { TopBar } from "@/components/TopBar";
@@ -11,6 +11,7 @@ import { MetricsStrip } from "@/components/MetricsStrip";
 import PlotModule from "@/modules/PlotModule";
 import GisModule from "@/modules/GisModule";
 import ThreeDModule from "@/modules/ThreeDModule";
+import EngineeringModule from "@/modules/EngineeringModule";
 import PlanningModule from "@/modules/PlanningModule";
 import CalculationsModule from "@/modules/CalculationsModule";
 import ParkingModule from "@/modules/ParkingModule";
@@ -28,6 +29,7 @@ const MODULES = [
   ["planning", "Apartment Planning", Building2, PlanningModule],
   ["3d", "3D Visualisation", Box, ThreeDModule],
   ["calculations", "Calculations", Calculator, CalculationsModule],
+  ["engineering", "IS/NBC Engineering", Ruler, EngineeringModule],
   ["parking", "Parking", Car, ParkingModule],
   ["quantities", "Quantities", Package, QuantitiesModule],
   ["boq", "BOQ", ClipboardList, BoqModule],

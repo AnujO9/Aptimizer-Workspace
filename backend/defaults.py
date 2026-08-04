@@ -100,4 +100,5 @@ def default_project(name, client, location, plot_reference, owner_id):
             "kw_per_unit": 4.0,
         },
         "compliance_rules": [dict(r) for r in DEFAULT_RULES],
+        "engineering": {},
     }

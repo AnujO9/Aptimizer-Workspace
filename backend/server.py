@@ -20,7 +20,9 @@ from starlette.middleware.cors import CORSMiddleware
 
 import auth as authlib
 import engine
+import engineering as englib
 import gis as gislib
+import iscodes as iscodes
 import reports as reportlib
 from defaults import default_project, default_tower
 
@@ -325,6 +327,46 @@ async def analyse_live(body: AnalyseIn, user: dict = Depends(get_current_user)):
     return engine.analyse(body.project)
 
 
+# ---------------------------------------------------------------- IS/NBC engineering modules
+@api.post("/engineering/analyse")
+async def engineering_live(body: AnalyseIn, user: dict = Depends(get_current_user)):
+    """Stateless IS/NBC module calculations for live editing."""
+    base = engine.analyse(body.project)
+    return englib.analyse_engineering(body.project, base)
+
+
+@api.get("/projects/{project_id}/engineering")
+async def engineering_for_project(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user)
+    return englib.analyse_engineering(proj, engine.analyse(proj))
+
+
+@api.get("/iscodes")
+async def code_library(q: str = ""):
+    term = (q or "").lower().strip()
+    entries = iscodes.CODE_LIBRARY
+    if term:
+        entries = [c for c in entries if term in c["code"].lower() or term in c["topic"].lower()
+                   or term in c["key_value"].lower() or term in c["clause"].lower()
+                   or term in c.get("keywords", "")]
+    return {"entries": entries, "count": len(entries), "query": q}
+
+
+@api.get("/cities")
+async def city_list(q: str = ""):
+    term = (q or "").lower().strip()
+    items = [{"city": name, "state": v[0], "zone": v[1], "wind_speed": v[2],
+              "annual_rainfall_mm": v[3], "rain_intensity_mm_hr": v[4]}
+             for name, v in sorted(iscodes.CITIES.items())]
+    if term:
+        items = [i for i in items if term in i["city"].lower() or term in i["state"].lower()]
+    return {"cities": items, "count": len(items),
+            "soils": [{"key": k, **v} for k, v in iscodes.SOILS.items()],
+            "exposures": list(iscodes.EXPOSURE.keys()),
+            "structural_systems": list(iscodes.RESPONSE_R.keys()),
+            "green_checklist": iscodes.GREEN_CHECKLIST}
+
+
 # ---------------------------------------------------------------- GIS & site intelligence
 @api.get("/projects/{project_id}/gis")
 async def get_gis(project_id: str, user: dict = Depends(get_current_user)):
@@ -480,7 +522,9 @@ async def download_report(project_id: str, report_type: str, user: dict = Depend
         raise HTTPException(status_code=400, detail="Unknown report type")
     proj = await load_project(project_id, user)
     proj.pop("_access_role", None)
-    pdf = reportlib.build_pdf(report_type, proj, engine.analyse(proj))
+    base = engine.analyse(proj)
+    eng = englib.analyse_engineering(proj, base)
+    pdf = reportlib.build_pdf(report_type, proj, base, eng)
     name = f"{proj.get('name', 'project').replace(' ', '_')}_{report_type}.pdf"
     import io
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",

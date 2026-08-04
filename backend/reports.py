@@ -22,6 +22,11 @@ REPORT_TITLES = {
     "compliance": "Compliance Validation Report",
     "utilities": "Utility Planning Report",
     "executive": "Executive Summary",
+    "structural": "Structural Design Basis Report",
+    "water": "Water & Sanitation Infrastructure Report",
+    "fire": "Fire & Life Safety Compliance Report",
+    "accessibility": "Accessibility Compliance Report",
+    "engineering": "IS / NBC Engineering Summary",
 }
 
 
@@ -63,7 +68,25 @@ def _n(v):
     return str(v)
 
 
-def build_pdf(report_type: str, project: dict, a: dict) -> bytes:
+def _mod_table(module, col_widths=None):
+    rows = [["Parameter", "Value", "Unit", "IS / NBC clause"]]
+    for o in module.get("outputs", []):
+        cl = o.get("clause") or {}
+        rows.append([o["label"], str(o["value"]), o.get("unit", ""),
+                     f"{cl.get('code', '')} {cl.get('clause', '')}".strip()])
+    return _table(rows, col_widths or [58 * mm, 30 * mm, 18 * mm, 60 * mm], align_right_from=1)
+
+
+def _checks_table(module):
+    rows = [["Check", "Actual", "Required", "Status", "Clause"]]
+    for c in module.get("checks", []):
+        cl = c.get("clause") or {}
+        rows.append([c["label"], str(c["actual"]), str(c["required"]), c["status"].upper(),
+                     f"{cl.get('code', '')} {cl.get('clause', '')}".strip()])
+    return _table(rows, [54 * mm, 22 * mm, 26 * mm, 16 * mm, 48 * mm], align_right_from=1)
+
+
+def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
                             topMargin=16 * mm, bottomMargin=16 * mm)
@@ -79,7 +102,8 @@ def build_pdf(report_type: str, project: dict, a: dict) -> bytes:
     areas, boq, cost = a["areas"], a["boq"], a["cost"]
     cur = cost["currency"]
 
-    if report_type in ("executive", "quantity", "cost", "boq", "compliance", "parking", "utilities"):
+    if report_type in ("executive", "quantity", "cost", "boq", "compliance", "parking", "utilities",
+                       "structural", "water", "fire", "accessibility", "engineering"):
         el += [Paragraph("Key Project Metrics", ss["Sec"]), _kv([
             ("Plot Area (m²)", _n(areas["plot_area_sqm"])),
             ("Plot Area (acres)", _n(areas["plot_area_acres"])),
@@ -158,6 +182,78 @@ def build_pdf(report_type: str, project: dict, a: dict) -> bytes:
                         f"{'max' if r['operator'] == 'max' else 'min'} {r['threshold']}{r['unit']}",
                         _n(r["actual"]), r["status"].upper()] for r in c["results"]],
                       col_widths=[22 * mm, 72 * mm, 32 * mm, 25 * mm, 20 * mm], align_right_from=2)]
+
+    if eng and report_type == "structural":
+        m = eng["modules"]
+        el += [Paragraph("1. Structural Load Estimator — IS 875 Parts 1–3", ss["Sec"]), _mod_table(m["loads"]),
+               Paragraph(f"<b>{m['loads']['recommendation']['label']}:</b> {m['loads']['recommendation']['value']}", ss["Sub"]),
+               Paragraph("2. Seismic Design — IS 1893 (Part 1):2016", ss["Sec"]), _mod_table(m["seismic"])]
+        for w in m["seismic"]["warnings"]:
+            el += [Paragraph(f"<b>{w['severity'].upper()}:</b> {w['text']}", ss["Sub"])]
+        el += [Paragraph("3. Foundation Advisor — IS 6403 / IS 1904", ss["Sec"]), _mod_table(m["foundation"]),
+               Paragraph(f"<b>Recommended:</b> {m['foundation']['recommendation']['value']}", ss["Sub"]),
+               Paragraph("4. Concrete Mix Design — IS 10262:2019", ss["Sec"]), _mod_table(m["mix"]),
+               Paragraph("12. Column Grid", ss["Sec"]), _mod_table(m["grid"])]
+
+    if eng and report_type == "water":
+        m = eng["modules"]
+        el += [Paragraph("Water Infrastructure — IS 1172:1993 / NBC Part 9", ss["Sec"]), _mod_table(m["water"]),
+               Paragraph(f"<b>{m['water']['recommendation']['label']}:</b> {m['water']['recommendation']['value']}", ss["Sub"]),
+               Paragraph("Storm Water & Rainwater Harvesting — IS 3764 / NBC Part 9", ss["Sec"]),
+               _mod_table(m["storm"]), _checks_table(m["storm"])]
+
+    if eng and report_type == "fire":
+        m = eng["modules"]["fire"]
+        el += [Paragraph(f"Fire & Life Safety — {m['passed']}/{m['total']} checks passed ({m['score']}%)", ss["Sec"]),
+               _checks_table(m), Paragraph("Per-floor checklist", ss["Sec"]),
+               _table([["Floor", "Level (m)", "Travel OK", "Extinguishers", "Refuge required", "Status"]] +
+                      [[r["floor"], _n(r["level_m"]), "yes" if r["travel_ok"] else "no", r["extinguishers"],
+                        "yes" if r["refuge_required"] else "—", r["status"].upper()] for r in m["floor_rows"]],
+                      col_widths=[18 * mm, 24 * mm, 24 * mm, 30 * mm, 34 * mm, 26 * mm])]
+
+    if eng and report_type == "accessibility":
+        m = eng["modules"]["accessibility"]
+        el += [Paragraph(f"Accessibility — score {m['score']}% ({m['passed']}/{m['total']} clauses met)", ss["Sec"]),
+               _checks_table(m),
+               Paragraph("Parking accessibility and NBC parking checks", ss["Sec"]),
+               _checks_table(eng["modules"]["parking_nbc"])]
+
+    if eng and report_type == "engineering":
+        s = eng["summary"]
+        el += [Paragraph("IS / NBC Engineering Summary", ss["Sec"]), _kv([
+            ("Design city", f"{eng['city_reference']['city']}, {eng['city_reference']['state']}"),
+            ("Seismic zone (IS 1893 Table 3)", s["seismic_zone"]),
+            ("Design base shear (kN)", _n(s["base_shear_kn"])),
+            ("Recommended column size (mm)", s["column_size"]),
+            ("Foundation type (IS 1904)", s["foundation"]),
+            ("Concrete mix (IS 10262)", s["mix_ratio"]),
+            ("Water demand (litre/day)", _n(s["water_demand_lpd"])),
+            ("STP capacity (KLD)", _n(s["stp_kld"])),
+            ("RWH annual yield (litre)", _n(s["rwh_annual_l"])),
+            ("Fire safety score (%)", _n(s["fire_score"])),
+            ("NBC parking score (%)", _n(s["parking_score"])),
+            ("Accessibility score (%)", _n(s["accessibility_score"])),
+            ("Green rating", s["green_rating"]),
+        ])]
+        if eng["warnings"]:
+            el += [Paragraph("Code warnings", ss["Sec"])]
+            el += [Paragraph(f"<b>[{w['severity'].upper()}] {w['module']}:</b> {w['text']}", ss["Sub"])
+                   for w in eng["warnings"]]
+        if eng["missing_inputs"]:
+            el += [Paragraph("Missing inputs", ss["Sec"]),
+                   Paragraph(", ".join(eng["missing_inputs"]), ss["Sub"])]
+
+    if eng and report_type == "executive":
+        s = eng["summary"]
+        el += [Paragraph("IS / NBC Engineering Highlights", ss["Sec"]), _kv([
+            ("Seismic zone", s["seismic_zone"]), ("Base shear (kN)", _n(s["base_shear_kn"])),
+            ("Column size (mm)", s["column_size"]), ("Foundation", s["foundation"]),
+            ("Water demand (litre/day)", _n(s["water_demand_lpd"])), ("STP (KLD)", _n(s["stp_kld"])),
+            ("Fire safety score (%)", _n(s["fire_score"])),
+            ("Accessibility score (%)", _n(s["accessibility_score"])),
+            ("Green rating", s["green_rating"]),
+        ])]
+
 
     el += [Spacer(1, 10), Paragraph("Generated by Aptimizer — figures are estimates based on configurable "
                                     "thumb-rule ratios and project rule sets.", ss["Sub"])]

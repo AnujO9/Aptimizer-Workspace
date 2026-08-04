@@ -7,6 +7,11 @@ import { int, money, num } from "@/lib/format";
 
 const REPORTS = [
   ["executive", "Executive Summary", "One-page overview across every module"],
+  ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility and green rating"],
+  ["structural", "Structural Design Basis", "IS 875 loads, IS 1893 base shear, foundation, mix design, column grid"],
+  ["water", "Water & Sanitation Infrastructure", "IS 1172 demand, sump/OHT, STP, storm drainage and RWH"],
+  ["fire", "Fire & Life Safety", "NBC Part 4 clause-by-clause checks with a per-floor checklist"],
+  ["accessibility", "Accessibility Compliance", "NBC Part 3 / RPwD checks with parking accessibility"],
   ["boq", "BOQ Report", "Material, labour and equipment schedules"],
   ["cost", "Cost Report", "Cost heads, cost per flat and per m²"],
   ["quantity", "Quantity Report", "Thumb-rule ratios and computed quantities"],
