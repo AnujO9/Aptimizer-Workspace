@@ -276,5 +276,5 @@ def test_zz_cleanup(admin_token):
     if r.status_code != 200:
         return
     for p in r.json():
-        if p["name"].startswith("TEST_"):
+        if p["name"].startswith("TEST_Aptimizer_") or p["name"] == "TEST_v":
             requests.delete(f"{API}/projects/{p['id']}", headers=H(admin_token), timeout=10)

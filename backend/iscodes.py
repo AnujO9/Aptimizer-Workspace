@@ -361,7 +361,7 @@ CODE_KEYWORDS = {
     "is10262": "mix design concrete proportion water cement ratio aggregate",
     "is6403": "soil bearing capacity sbc foundation footing",
     "is1904": "foundation footing raft pile depth soil",
-    "is3764": "storm water drainage rainfall runoff rational method",
+    "is3764": "storm water drainage rainfall runoff rational method rainwater harvesting recharge",
     "is3861": "apartment planning room size measurement grid modular",
     "is3534": "lift elevator accessibility car size",
     "nbc3": "far setback accessibility ramp corridor door barrier free development control",
@@ -379,6 +379,13 @@ CODE_BY_STANDARD = {}
 for _c in CODE_LIBRARY:
     CODE_BY_STANDARD.setdefault(_c["code"].split(":")[0].strip(), _c["id"])
 
+# clauses that cite two standards at once cannot be resolved by prefix — map them explicitly
+CLAUSE_LIBRARY = {
+    "storm_rational": "is3764", "rwh": "nbc9", "parking_ecs": "nbc8", "parking_aisle": "nbc8",
+    "parking_accessible": "rpwd", "parking_ev": "bee_ev", "parking_2w": "nbc8", "fire_ext": "nbc4",
+    "acc_tactile": "nbc3", "griha": "griha", "igbc": "griha",
+}
+
 
 def clause(key):
     """Inline clause reference + the library entry it deep-links to."""
@@ -386,4 +393,4 @@ def clause(key):
     if not c:
         return None
     std = c["code"].split(":")[0].strip()
-    return {**c, "library_id": CODE_BY_STANDARD.get(std)}
+    return {**c, "library_id": CLAUSE_LIBRARY.get(key) or CODE_BY_STANDARD.get(std)}

@@ -108,21 +108,22 @@ const ChecksList = ({ module }) => (
   </ul>
 );
 
-const CodeLibrary = ({ query, setQuery }) => {
+const CodeLibrary = ({ query, setQuery, focusId, clearFocus }) => {
   const [entries, setEntries] = useState([]);
   useEffect(() => {
     const t = setTimeout(() => {
-      api.get(`/iscodes?q=${encodeURIComponent(query)}`).then(({ data }) => setEntries(data.entries)).catch(() => {});
+      const qs = focusId ? `id=${encodeURIComponent(focusId)}` : `q=${encodeURIComponent(query)}`;
+      api.get(`/iscodes?${qs}`).then(({ data }) => setEntries(data.entries)).catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [query]);
+  }, [query, focusId]);
   return (
     <div className="space-y-3">
       <div className="relative">
         <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-slate-400" />
         <Input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { clearFocus?.(); setQuery(e.target.value); }}
           placeholder="Search IS / NBC codes, topics or values…"
           className="pl-9 rounded-sm"
           data-testid="code-library-search"
@@ -148,7 +149,7 @@ const CodeLibrary = ({ query, setQuery }) => {
           ))}
         </TableBody>
       </Table>
-      {!entries.length && <p className="text-sm text-slate-500">No entries match “{query}”.</p>}
+      {!entries.length && <p className="text-sm text-slate-500" data-testid="code-library-empty">No entries match “{query}”.</p>}
     </div>
   );
 };
@@ -157,6 +158,7 @@ export default function EngineeringModule({ project, update, readOnly }) {
   const [eng, setEng] = useState(null);
   const [tab, setTab] = useState("loads");
   const [libQuery, setLibQuery] = useState("");
+  const [libFocus, setLibFocus] = useState("");
   const [libOpen, setLibOpen] = useState(false);
   const [meta, setMeta] = useState(null);
 
@@ -174,8 +176,9 @@ export default function EngineeringModule({ project, update, readOnly }) {
     return () => clearTimeout(t);
   }, [project]);
 
-  const openLibrary = useCallback((code) => {
+  const openLibrary = useCallback((code, libraryId) => {
     setLibQuery(code);
+    setLibFocus(libraryId || "");
     setLibOpen(true);
   }, []);
 
@@ -324,7 +327,7 @@ export default function EngineeringModule({ project, update, readOnly }) {
         {tab === "library" ? (
           <Section title="IS / NBC Code Reference Library" description="Every calculated value in the app links here"
             testid="eng-panel-library">
-            <CodeLibrary query={libQuery} setQuery={setLibQuery} />
+            <CodeLibrary query={libQuery} setQuery={setLibQuery} focusId={libFocus} clearFocus={() => setLibFocus("")} />
           </Section>
         ) : (
           mod && (
@@ -590,7 +593,7 @@ export default function EngineeringModule({ project, update, readOnly }) {
               <DialogDescription>Deep-linked from the calculated value you clicked.</DialogDescription>
             </DialogHeader>
             <div className="max-h-[70vh] overflow-auto" data-testid="clause-dialog">
-              <CodeLibrary query={libQuery} setQuery={setLibQuery} />
+              <CodeLibrary query={libQuery} setQuery={setLibQuery} focusId={libFocus} clearFocus={() => setLibFocus("")} />
             </div>
             <Button variant="outline" className="rounded-sm" data-testid="clause-dialog-open-library"
               onClick={() => { setTab("library"); setLibOpen(false); }}>
