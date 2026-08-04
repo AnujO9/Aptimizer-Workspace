@@ -67,6 +67,40 @@ Stack: React + FastAPI + MongoDB + JWT auth, Leaflet/OSM maps.
   pointer-capture and slider keyboard support) were fixed with stopPropagation handlers and explicit
   floor/sun stepper buttons.
 
+## Implemented — IS/NBC Engineering layer (04 Aug 2026)
+User choices: all 12 modules at once (leaner UI), one sidebar section with sub-tabs, ~60 major Indian
+cities + state fallback + manual override, new Structural/Water/Fire/Accessibility PDFs + executive
+values, shared engineering fields editable inside the section with defaults.
+- `backend/iscodes.py` — single source of truth: 59-entry CLAUSES registry (code + clause + topic +
+  `library_id` deep-link), ~60 CITIES (seismic zone, basic wind speed, annual rainfall, rain intensity)
+  with state fallback and national default, SOILS (SBC/φ/γ), EXPOSURE, MIX tables, RESPONSE_R,
+  GREEN_CHECKLIST, GRIHA/IGBC bands, 20-entry CODE_LIBRARY + CODE_KEYWORDS search index,
+  CLAUSE_LIBRARY overrides for clauses that cite two standards.
+- `backend/engineering.py` — `analyse_engineering(project, base)` returns `{config, city_reference,
+  modules, missing_inputs, warnings, summary}` for 11 calculators: structural loads (IS 875 P1–3),
+  seismic & base shear (IS 1893:2016), foundation advisor (IS 6403/1904), mix design (IS 10262:2019),
+  water infrastructure (IS 1172/NBC 9), storm + RWH (IS 3764/NBC 9), parking NBC/SP:21, fire safety
+  (NBC 4, per-floor checklist), accessibility (NBC 3/RPwD), green rating (GRIHA/IGBC), column grid
+  optimiser (IS 456/3861). Module 10 is the searchable library served by `/api/iscodes`.
+  Missing shared data is reported per module instead of failing.
+- Interactions: loads → foundation (column service load, footing area, raft/pile switch on soft clay);
+  mix design → BOQ material rows for the project concrete volume; water + storm → auto-credited
+  green-rating points; grid optimiser flags columns clashing with planned rooms.
+- Endpoints: `POST /api/engineering/analyse`, `GET /api/projects/{id}/engineering`,
+  `GET /api/iscodes?q=&id=`, `GET /api/cities`. `engineering` added to the project PUT allow-list and
+  to the frontend autosave whitelist.
+- Frontend: `modules/EngineeringModule.jsx` (shared-data header with derived zone/wind/rainfall/base
+  shear/column metrics, missing-input and warning banners, 12 sub-tabs, per-module inputs, checks
+  lists, SBC/BOQ/floor/grid tables, green checklist) + `components/Clause.jsx` clause chips that
+  deep-link into the library dialog. Registered as the "IS/NBC Engineering" sidebar section.
+- Reports: new Structural / Water / Fire / Accessibility / Engineering-summary PDFs, engineering
+  values added to the Executive Summary.
+- QA: new `backend/tests/engineering_test.py` (43 tests) — full suite **87/87 pass**; testing_agent
+  iteration 4 (60/61 frontend assertions). Bugs found & fixed: engineering config not persisted
+  (backend allow-list + frontend EDITABLE whitelist), 11 clause chips deep-linking to an empty
+  library, unknown soil_type silently defaulting, and a cross-file test cleanup that deleted other
+  suites' projects.
+
 ## Backlog
 P1 — Google Maps JS API layer (needs paid key), project thumbnails, Google social login.
 P1 — GIS: transit isochrones, infrastructure (power/water lines) inference from OSM tags.
@@ -76,4 +110,5 @@ P2 — 3D: real tower footprint polygons (draw on plan), shadow-study export, GP
 ## Next tasks
 1. Scheme comparison view (two saved versions side by side: FAR, units, cost/flat, compliance).
 2. Include GIS suitability + buildability in the Executive Summary PDF.
+3. Engineering: derive per-tower (not tallest-only) loads/seismic when towers differ in height.
 

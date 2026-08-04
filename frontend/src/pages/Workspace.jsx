@@ -43,6 +43,7 @@ const MODULES = [
 const EDITABLE = [
   "name", "client", "location", "plot_reference", "status", "plot", "towers", "parking", "config",
   "quantity_ratios", "rates", "labour_rates", "equipment_rates", "utility_config", "compliance_rules",
+  "engineering",
 ];
 
 export default function Workspace() {

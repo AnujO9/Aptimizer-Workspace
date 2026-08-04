@@ -60,7 +60,10 @@ DEFAULT_ENGINEERING = {
 
 
 def cfg(project):
-    return {**DEFAULT_ENGINEERING, **(project.get("engineering") or {})}
+    c = {**DEFAULT_ENGINEERING, **(project.get("engineering") or {})}
+    soil = str(c.get("soil_type") or "").replace("_", " ").strip().lower()
+    c["soil_type"] = soil if soil in C.SOILS else DEFAULT_ENGINEERING["soil_type"]
+    return c
 
 
 def _building(project, base):

@@ -159,6 +159,13 @@ def test_missing_inputs_reported_not_crashed(headers):
 
 
 # ---------------------------------------------------------------- module interactions
+def test_unknown_soil_falls_back_to_default(doc, headers):
+    d = analyse(headers, {**doc, "engineering": {"soil_type": "soft_clay"}})
+    assert d["config"]["soil_type"] == "soft clay"
+    d2 = analyse(headers, {**doc, "engineering": {"soil_type": "martian regolith"}})
+    assert d2["config"]["soil_type"] == "dense sand"
+
+
 def test_loads_feed_foundation(doc, headers):
     d = analyse(headers, doc)
     col = d["modules"]["loads"]["derived"]["column_load"]

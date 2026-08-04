@@ -202,3 +202,11 @@ agent_communication:
     -agent: "main"
     -message: "Full suite re-run after the test-file fix: 45/45 pass (pytest -o addopts= to avoid xdist fixture races). V2 complete: GIS & Site Intelligence + 3D visualisation, both reading/writing the same project document. No V1 code paths changed apart from additive GIS routes and the 'gis' PUT allow-list entry."
 
+
+agent_communication:
+    -agent: "main"
+    -message: "IS/NBC Engineering layer (12 modules) validated. Added /app/backend/tests/engineering_test.py (43 tests). Full suite now 87/87 pass. Fixed 3 real bugs found during validation: (1) PUT /api/projects allow-list missing 'engineering' so shared engineering fields never persisted server-side; (2) 11 clause references citing two standards resolved to no library entry -> clicking their clause chip opened an empty dialog (fixed with explicit CLAUSE_LIBRARY map + ?id= deep-link filter on /api/iscodes + focusId in CodeLibrary); (3) an unknown/underscored soil_type silently fell back to dense sand while the UI select rendered blank -> cfg() now normalises the key."
+    -agent: "testing"
+    -message: "Iteration 4 (/app/test_reports/iteration_4.json): 60/61 frontend assertions PASS. All 12 sub-tabs render; clause chips on Storm/Parking/Fire/Accessibility/Green all deep-link to exactly one code row; library search seismic/parking/fire/rainwater/accessibility/concrete mix/foundation/wind all return rows; City=Guwahati -> Zone V and base shear 759 -> 2,734 kN; soft clay -> piled raft + critical warning; mix->BOQ table, green auto-credits (3 items) and live recompute all verified; all 6 engineering PDFs valid with IS/NBC clause text (pypdf). ONE CRITICAL: shared engineering fields not persisted across reload — frontend EDITABLE whitelist in Workspace.jsx omitted 'engineering'."
+    -agent: "main"
+    -message: "Added 'engineering' to the EDITABLE whitelist in Workspace.jsx. Re-verified by browser automation: city set to Guwahati -> saved -> page reload -> eng-city-select still 'Guwahati — Zone V' and eng-zone-metric still V. Full backend suite re-run: 87/87 pass. IS/NBC Engineering layer complete."
