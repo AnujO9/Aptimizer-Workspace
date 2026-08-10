@@ -1,0 +1,35 @@
+{
+  "summary": "First QA pass for Aptimizer. Backend: 32/32 pytest tests pass (auth incl. admin seed/register/login/duplicate/bad-password/me, RBAC admin GET /api/users, engineer/viewer 403, viewer create-project 403, viewer PUT 403, project CRUD, add-tower, /analysis with seeded expectations plot_area=3994.59 m2 / 48 units / FAR 1.61 / compliance 12/12, live /analyse, versions save+restore, shares to registered viewer + activity log, share to unregistered email returns 404, 7 PDF reports + BOQ xlsx all download >500 bytes). Frontend: verified admin login, project create -> workspace, MetricsStrip live values, module navigation across all 11 modules, add-tower live update (FAR 1.61 -> 3.22 after tower B added), executive PDF + BOQ xlsx downloads via UI (6667/8319 bytes), compliance rule threshold edit (FAR-01 threshold 3.0->0.1 flips to FAIL and appears in Violations panel, score dropped to 8/12), autosave SAVED indicator visible, viewer read-only flow (badge='viewer', 14/16 plot inputs disabled). No blocking issues found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "New project dialog", "issues": ["React a11y warning: Missing Description or aria-describedby on {DialogContent} (non-blocking, appears twice in console)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add DialogDescription or aria-describedby to Dialog components in Projects page to silence a11y warning.",
+    "(Optional) On Plot module for viewers, the two 'Plot Reference' style inputs at the top appear editable while other 14 are correctly disabled - verify these should also be read-only for viewers."
+  ],
+  "critical_code_review_comments": [
+    "server.py load_project mirrors owner_id as string for shares but compares str(owner_id) - fine. Consider unifying to always store owner_id as string (already does) - good.",
+    "server.py: HTTPException in oid() returns 404 for bad ObjectId; acceptable and consistent.",
+    "engine.parking_metrics returns keys 'required_slots'/'provided_slots' (not 'required'/'provided') - documentation/testing should reflect this; my tests updated to match code.",
+    "Login attempt lockout after 5 failed attempts for 15 min is implemented (server.py L114-125). Good.",
+    "seed_admin logic updates admin password if changed (L475-477). Good.",
+    "auth.set_auth_cookies uses httpOnly cookies + Bearer token in localStorage - dual auth supported.",
+    "CORS uses FRONTEND_URL from env with allow_credentials=True and explicit origins (not wildcard when credentials enabled) - correct."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@aptimizer.com/Admin@123 (seeded), engineer@aptimizer.com/Engineer@123, viewer@aptimizer.com/Viewer@123 (auto-created via register during tests)",
+  "seed_data_creation": "Test users engineer@aptimizer.com and viewer@aptimizer.com are created via /api/auth/register if not present. TEST_* prefixed projects created during tests are cleaned up by test_zz_cleanup and post-run script.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/backend_test.py (pytest, 32 tests, parallel via -n if xdist). Run: REACT_APP_BACKEND_URL=<url> pytest /app/backend/tests/backend_test.py -v. All UI critical flows verified via Playwright: login (admin/engineer/viewer), project create, workspace metrics, all 11 module nav (plot/planning/calculations/parking/quantities/boq/cost/utilities/compliance/reports/collaboration), add-tower live recalc, PDF+xlsx download, compliance threshold edit live-updating violations, viewer read-only badge and disabled inputs. Data-testids as listed in review request are all present and working."
+}

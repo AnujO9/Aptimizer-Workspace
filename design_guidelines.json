@@ -1,0 +1,116 @@
+{
+  "project_identity": {
+    "name": "Aptimizer",
+    "type": "Civil Engineering Platform (Data-Dense SaaS)",
+    "target_audience": "Civil engineers, architects, project managers",
+    "tone": "Professional, precise, authoritative, high-density, analytical"
+  },
+  "theme": "light",
+  "typography": {
+    "strategy": "Swiss Brutalist (Tech) variant - focus on readability and precision.",
+    "headings": {
+      "family": "Work Sans",
+      "classes": "font-sans font-semibold tracking-tight text-slate-900"
+    },
+    "body": {
+      "family": "Inter",
+      "classes": "font-sans text-slate-700"
+    },
+    "data_numbers": {
+      "family": "JetBrains Mono",
+      "classes": "font-mono text-slate-800 tracking-tight"
+    }
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth)",
+    "background": {
+      "default": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "map_overlay": "rgba(255, 255, 255, 0.95)"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#475569",
+      "muted": "#94A3B8"
+    },
+    "brand": {
+      "primary": "#2563EB",
+      "primary_hover": "#1D4ED8",
+      "accent": "#F59E0B"
+    },
+    "status": {
+      "success": "#059669",
+      "success_bg": "#D1FAE5",
+      "danger": "#DC2626",
+      "danger_bg": "#FEE2E2",
+      "warning": "#D97706",
+      "warning_bg": "#FEF3C7"
+    },
+    "borders": "#E2E8F0"
+  },
+  "layouts": {
+    "overall": "High-Density Grid (Mode B). Responsive side navigation + top utility bar.",
+    "spacing": "Tight spacing for data areas (p-2 to p-4) to maximize viewport real estate. Generous spacing (p-6 to p-8) for outer containers.",
+    "cards": "Flat solid surfaces. 1px border-slate-200. No heavy shadows, use shadow-sm sparingly.",
+    "sidebar": "Dark slate (#0F172A) sidebar for contrast against light content area, or pure white with border-r.",
+    "live_metrics_strip": "Sticky header strip. Horizontal flex layout. JetBrains Mono for metric values."
+  },
+  "components": {
+    "data_tables": "Shadcn UI tables. Compact padding. Right-align numeric columns.",
+    "forms_inputs": "Shadcn UI forms. Sharp corners or rounded-sm. Focus rings must be primary color.",
+    "charts": "Recharts. Use structural grayscale and brand primary. Avoid random color generation.",
+    "map": "Leaflet layer with custom UI buttons overlaid. Polygon draw tools must have active/inactive states.",
+    "compliance_panel": "Grid of rule sets. Use strict Pass/Fail color coding (Success/Danger). Include an icon (Check/X).",
+    "buttons": "Rounded-md. Primary actions get solid brand color. Secondary actions get outline or ghost styles."
+  },
+  "visual_enhancers": {
+    "surfaces": "Use 'Grid Borders' for the main layout. Expose the structural grid with subtle 1px borders.",
+    "glassmorphism": "Avoid in data-heavy areas to prevent refraction of text. Use pure solid colors.",
+    "shadows": "Minimal. Use shadow-sm for cards."
+  },
+  "motion": {
+    "interactions": "Micro-animations only. transition-colors on hover.",
+    "data_updates": "When a calculation changes, use a subtle background flash (bg-slate-100) or text color transition."
+  },
+  "accessibility": {
+    "contrast": "Strict APCA/WCAG AA compliance. Dark text on light backgrounds.",
+    "focus": "All interactive elements must have a visible focus-visible state (ring-2).",
+    "testing": "All interactive and key informational elements MUST include `data-testid` attribute."
+  },
+  "media": {
+    "icons": "lucide-react (default for Shadcn)",
+    "image_urls": {
+      "login_background": {
+        "url": "https://images.pexels.com/photos/4134179/pexels-photo-4134179.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Architectural blueprints background for login page"
+      },
+      "empty_project_state": {
+        "url": "https://images.pexels.com/photos/18153132/pexels-photo-18153132.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Modern apartment building for empty project state"
+      },
+      "team_collaboration": {
+        "url": "https://images.pexels.com/photos/8961260/pexels-photo-8961260.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Workers discussing plans on site for roles/sharing view"
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize Shadcn components. Create files with .js/.jsx extensions, not .tsx.",
+    "Map module: use react-leaflet, drawing polygons and calculating areas.",
+    "Calculations: ensure live updates. Data must be deeply interconnected.",
+    "Include a `data-testid` attribute on all inputs, buttons, and important UI sections.",
+    "Implement the 2D floor plate as an SVG diagram with clickable or hoverable sections.",
+    "Keep standard Vercel/Shadcn look but adapt for high density: tighter paddings, mono fonts for digits.",
+    "Never use completely transparent backgrounds for overlays, dropdowns, or headers."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Create new components that match the style and conventions of existing components when needed.",
+    "Use sonner for toasts.",
+    "Do not center-align the app container (.App { text-align: center; } is banned).",
+    "Never apply universal transition (transition: all).",
+    "Use 'rounded-md' or 'rounded-sm' for structural elements.",
+    "Ensure all data cells and table headers are properly aligned.",
+    "Do not use complete transparent background in headers, overlays, or surfaces that have content under them."
+  ]
+}

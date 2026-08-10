@@ -1,0 +1,275 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { Building2, Copy, Link2, Pencil, Plus, Trash2, Users, X } from "lucide-react";
+import { api, apiError } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { TopBar } from "@/components/TopBar";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { dt, int, money, num } from "@/lib/format";
+
+const EMPTY = { name: "", client: "", location: "", plot_reference: "" };
+
+export default function Projects() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [projects, setProjects] = useState([]);
+  const [cities, setCities] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [editing, setEditing] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [linkFor, setLinkFor] = useState(null);
+
+  const load = async () => {
+    try {
+      const { data } = await api.get("/projects");
+      setProjects(data);
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    }
+  };
+
+  useEffect(() => {
+    load();
+    api.get("/cities").then(({ data }) => setCities(data.cities)).catch(() => {});
+  }, []);
+
+  const openNew = (v) => {
+    setForm(EMPTY);
+    setOpen(v);
+  };
+
+  const create = async () => {
+    if (!form.name.trim()) return toast.error("Project name is required");
+    setBusy(true);
+    try {
+      const { data } = await api.post("/projects", form);
+      toast.success("Project created");
+      setForm(EMPTY);
+      setOpen(false);
+      navigate(`/projects/${data.id}`);
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    setBusy(true);
+    try {
+      const { name, client, location, plot_reference, status } = editing;
+      await api.put(`/projects/${editing.id}`, { updates: { name, client, location, plot_reference, status } });
+      toast.success("Project updated");
+      setEditing(null);
+      load();
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    try {
+      await api.delete(`/projects/${confirmDelete.id}`);
+      toast.success("Project deleted");
+      setConfirmDelete(null);
+      load();
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    }
+  };
+
+  const publicUrl = (t) => `${window.location.origin}/share/compliance/${t}`;
+
+  const generateLink = async (p) => {
+    try {
+      const { data } = await api.post(`/projects/${p.id}/public-link`);
+      setLinkFor({ ...p, public_token: data.public_token });
+      setProjects((list) => list.map((x) => (x.id === p.id ? { ...x, public_token: data.public_token } : x)));
+      toast.success("Share link ready");
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    }
+  };
+
+  const revokeLink = async (p) => {
+    try {
+      await api.delete(`/projects/${p.id}/public-link`);
+      setProjects((list) => list.map((x) => (x.id === p.id ? { ...x, public_token: null } : x)));
+      setLinkFor(null);
+      toast.success("Link revoked");
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    }
+  };
+
+  const copy = async (t) => {
+    try {
+      await navigator.clipboard.writeText(publicUrl(t));
+      toast.success("Link copied");
+    } catch {
+      toast.error("Copy failed — select and copy the link manually");
+    }
+  };
+
+  return (
+    <div className="min-h-screen">
+      <TopBar />
+      <main className="max-w-7xl mx-auto p-6 space-y-6" data-testid="projects-page">
+        <div className="flex items-end justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Projects</h1>
+            <p className="text-sm text-slate-500 mt-1">
+              {projects.length} project{projects.length === 1 ? "" : "s"} · signed in as{" "}
+              <span className="font-mono">{user?.email}</span>
+            </p>
+          </div>
+          {user?.role !== "viewer" && (
+            <Dialog open={open} onOpenChange={openNew}>
+              <Button className="rounded-sm" data-testid="new-project-button" onClick={() => openNew(true)}>
+                <Plus className="h-4 w-4 mr-1.5" /> New project
+              </Button>
+              <DialogContent className="bg-white">
+                <DialogHeader>
+                  <DialogTitle>New project</DialogTitle>
+                  <DialogDescription>Metadata for the project. Plot, towers and rates can be edited after creation.</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs uppercase tracking-wide text-slate-500">Project name</Label>
+                    <Input className="rounded-sm" placeholder="Green Meadows Phase 1" data-testid="project-name-input"
+                      value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs uppercase tracking-wide text-slate-500">Client</Label>
+                    <Input className="rounded-sm" placeholder="Meadow Developers Pvt Ltd" data-testid="project-client-input"
+                      value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs uppercase tracking-wide text-slate-500">Location (city)</Label>
+                    <Select value={form.location} onValueChange={(v) => setForm((f) => ({ ...f, location: v }))}>
+                      <SelectTrigger className="rounded-sm" data-testid="project-location-select">
+                        <SelectValue placeholder="Select a city" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-72">
+                        {cities.map((c) => (
+                          <SelectItem key={c.city} value={c.city}>{c.city} — {c.state}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-slate-500">
+                      Sets the map centre, seismic zone, wind speed and rainfall for this project.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs uppercase tracking-wide text-slate-500">Plot / survey reference</Label>
+                    <Input className="rounded-sm" placeholder="Survey No. 42/1B" data-testid="project-plot_reference-input"
+                      value={form.plot_reference} onChange={(e) => setForm((f) => ({ ...f, plot_reference: e.target.value }))} />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button onClick={create} disabled={busy} className="rounded-sm" data-testid="create-project-submit">
+                    {busy ? "Creating…" : "Create project"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          )}
+        </div>
+
+        {projects.length === 0 ? (
+          <div className="border border-slate-200 bg-white rounded-sm overflow-hidden grid md:grid-cols-2" data-testid="projects-empty">
+            <div className="p-10">
+              <h2 className="text-lg font-semibold tracking-tight">No projects yet</h2>
+              <p className="text-sm text-slate-500 mt-2 max-w-sm">
+                Create your first project to draw a plot, plan towers and generate area statements, BOQ, cost and
+                compliance reports.
+              </p>
+            </div>
+            <img
+              src="https://images.pexels.com/photos/18153132/pexels-photo-18153132.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+              alt="Apartment building"
+              className="h-56 md:h-full w-full object-cover"
+            />
+          </div>
+        ) : (
+          <div className="grid gap-px bg-slate-200 border border-slate-200 md:grid-cols-2 xl:grid-cols-3" data-testid="projects-grid">
+            {projects.map((p) => (
+              <article
+                key={p.id}
+                className="bg-white p-4 hover:bg-slate-50 transition-colors cursor-pointer"
+                onClick={() => navigate(`/projects/${p.id}`)}
+                data-testid={`project-card-${p.id}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="font-semibold tracking-tight truncate">{p.name}</h3>
+                    <p className="text-xs text-slate-500 truncate">
+                      {p.client || "No client"} · {p.location || "No location"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {p.shared && (
+                      <span className="text-[10px] font-mono uppercase bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-sm flex items-center gap-1">
+                        <Users className="h-3 w-3" /> shared
+                      </span>
+                    )}
+                    <span className="text-[10px] font-mono uppercase bg-slate-100 px-1.5 py-0.5 rounded-sm">{p.status}</span>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-px bg-slate-200 border border-slate-200">
+                  {[
+                    ["Plot m²", num(p.summary.plot_area_sqm, 0)],
+                    ["Built-up m²", num(p.summary.builtup_area_sqm, 0)],
+                    ["Units", int(p.summary.total_units)],
+                    ["FAR", num(p.summary.far, 2)],
+                    ["Cost", money(p.summary.cost_total)],
+                    ["Compliance", `${p.summary.compliance_score}%`],
+                  ].map(([k, v]) => (
+                    <div key={k} className="bg-white px-2 py-1.5">
+                      <div className="text-[9px] uppercase tracking-wider text-slate-500">{k}</div>
+                      <div className="font-mono text-sm">{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <Building2 className="h-3 w-3" /> {p.summary.towers} tower(s) · edited {dt(p.updated_at)}
+                  </span>
+                  {!p.shared && (
+                    <span className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                      <Button variant="ghost" size="sm" className="h-6 px-1.5 text-slate-600 hover:text-slate-900"
+                        data-testid={`edit-project-${p.id}`} title="Edit project details"
+                        onClick={() => setEditing({ ...p, status: p.status || "draft" })}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm"
+                        className={`h-6 px-1.5 ${p.public_token ? "text-blue-600" : "text-slate-600 hover:text-slate-900"}`}
+                        data-testid={`share-link-project-${p.id}`} title="Public compliance link"
+                        onClick={() => (p.public_token ? setLinkFor(p) : generateLink(p))}>
+                        <Link2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" className="h-6 px-1.5 text-red-600 hover:text-red-700"
+                        data-testid={`delete-project-${p.id}`} title="Delete project"
+                        onClick={() => setConfirmDelete(p)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </span>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
