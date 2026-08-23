@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MapContainer, TileLayer, Polygon, Marker, Polyline, LayersControl, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Polygon, Marker, Polyline, LayersControl, Tooltip, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,23 @@ const ClickCatcher = ({ active, onAdd }) => {
   return null;
 };
 
-export const PlotMap = ({ coordinates = [], roadEdges = [], onChange, readOnly }) => {
+/**
+ * Extra styled geometry drawn over the plot — the site layout engine's output.
+ * Each overlay is { key, polygons, style }, where `polygons` is the engine's
+ * [[exteriorRing, ...holeRings], ...] nesting of [lat, lng] pairs, which Leaflet's
+ * Polygon accepts directly. Kept generic so stages 2 and 3 (roads, amenities, towers)
+ * render through the same prop without touching this component again.
+ */
+const Overlays = ({ overlays }) =>
+  overlays.flatMap((o) =>
+    (o.polygons || []).map((rings, i) => (
+      <Polygon key={`${o.key}-${i}`} positions={rings} pathOptions={o.style}>
+        {o.label && <Tooltip sticky>{o.label}</Tooltip>}
+      </Polygon>
+    ))
+  );
+
+export const PlotMap = ({ coordinates = [], roadEdges = [], overlays = [], onChange, readOnly }) => {
   const [drawing, setDrawing] = useState(false);
   const center = coordinates.length
     ? [
@@ -87,6 +103,7 @@ export const PlotMap = ({ coordinates = [], roadEdges = [], onChange, readOnly }
         {coordinates.length >= 3 && (
           <Polygon positions={coordinates} pathOptions={{ color: "#2563EB", weight: 2, fillOpacity: 0.15 }} />
         )}
+        <Overlays overlays={overlays} />
         {edges.map(
           ([a, b], i) =>
             roadIdx.has(i) && (

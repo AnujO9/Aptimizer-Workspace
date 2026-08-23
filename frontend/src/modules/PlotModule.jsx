@@ -1,20 +1,97 @@
+import { useState } from "react";
 import { PlotMap } from "@/components/PlotMap";
 import { Metric, NumField, Section, TextField } from "@/components/Field";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
+import { api, apiError } from "@/lib/api";
 import { COMPASS, num } from "@/lib/format";
 import { Plus, Trash2 } from "lucide-react";
+
+// Distinct styled layers so envelope, circulation, amenities and packable land stay
+// visually separable on the map.
+const LAYER_STYLE = {
+  envelope: { color: "#16A34A", weight: 2, dashArray: "6 4", fillOpacity: 0.06 },
+  ring: { color: "#F59E0B", weight: 1, fillColor: "#F59E0B", fillOpacity: 0.45 },
+  driveways: { color: "#D97706", weight: 1, fillColor: "#FBBF24", fillOpacity: 0.5 },
+  amenity: { color: "#7C3AED", weight: 1, fillColor: "#A78BFA", fillOpacity: 0.65 },
+  residual: { color: "#16A34A", weight: 1, fillColor: "#4ADE80", fillOpacity: 0.35 },
+  tower: { color: "#1D4ED8", weight: 1.5, fillColor: "#2563EB", fillOpacity: 0.8 },
+};
 
 export default function PlotModule({ project, analysis, update, readOnly }) {
   const plot = project.plot || {};
   const coords = plot.coordinates || [];
   const areas = analysis?.areas;
 
+  const [setbacks, setSetbacks] = useState({ default: 6, front: 9, rear: 4.5, side: 4.5 });
+  const [road, setRoad] = useState({ ring_width: 6, driveway_width: 4.5, max_distance_to_road: 45 });
+  const [towerCfg, setTowerCfg] = useState({ max_towers: "", floors_min: 4, floors_max: 24 });
+  const [layout, setLayout] = useState(null);
+  const [layoutError, setLayoutError] = useState("");
+  const [running, setRunning] = useState("");
+
   const setPlot = (key, value) => update((p) => {
     p.plot[key] = value;
     if (key === "coordinates") p.plot.is_placeholder = false;
+    setLayout(null);          // geometry changed — the old layout no longer applies
+    setLayoutError("");
   });
+
+  const runStage = async (stage) => {
+    setRunning(stage);
+    setLayoutError("");
+    try {
+      const { data } = await api.post(`/site-layout/${stage}`, {
+        project,
+        config: {
+          setbacks,
+          road,
+          // Blank means "as many as the land allows" — only send a real cap.
+          towers: {
+            floors_min: Number(towerCfg.floors_min) || 4,
+            floors_max: Number(towerCfg.floors_max) || 24,
+            ...(Number(towerCfg.max_towers) > 0 ? { max_towers: Number(towerCfg.max_towers) } : {}),
+          },
+        },
+      });
+      if (data.ok) {
+        setLayout(data);
+        // Persist a full layout on the project so the 3D view and the map read the same
+        // engine output instead of each deriving their own placement.
+        if (stage === "plan") update((p) => { p.site_layout = data; });
+      } else {
+        setLayout(null);
+        setLayoutError(data.error?.message || "Could not compute the site layout.");
+      }
+    } catch (e) {
+      setLayout(null);
+      setLayoutError(apiError(e.response?.data?.detail));
+    } finally {
+      setRunning("");
+    }
+  };
+
+  const overlays = [];
+  if (layout) {
+    overlays.push({ key: "envelope", polygons: layout.envelope.polygons, style: LAYER_STYLE.envelope,
+                    label: `Buildable envelope · ${num(layout.envelope.area_sqm, 0)} m²` });
+    if (layout.residual)
+      overlays.push({ key: "residual", polygons: layout.residual.polygons, style: LAYER_STYLE.residual,
+                      label: `Packable land · ${num(layout.residual.area_sqm, 0)} m²` });
+    if (layout.roads) {
+      overlays.push({ key: "ring", polygons: layout.roads.ring_polygons, style: LAYER_STYLE.ring,
+                      label: `Perimeter access road · ${layout.roads.ring_width_m} m wide` });
+      overlays.push({ key: "drive", polygons: layout.roads.driveway_polygons, style: LAYER_STYLE.driveways,
+                      label: `Internal driveway · ${layout.roads.driveway_width_m} m wide` });
+    }
+    (layout.amenities || []).forEach((a) =>
+      overlays.push({ key: `amenity-${a.key}`, polygons: a.polygons, style: LAYER_STYLE.amenity,
+                      label: `${a.name} · ${num(a.area_sqm, 0)} m² · ${a.floors} floor(s), ${a.height_m} m` }));
+    (layout.towers || []).forEach((t, i) =>
+      overlays.push({ key: `tower-${i}`, polygons: t.polygons, style: LAYER_STYLE.tower,
+                      label: `${t.name} · ${t.floors}F · ${num(t.footprint_sqm, 0)} m² · ${t.units} units` }));
+  }
 
   return (
     <div className="space-y-4">
@@ -45,9 +122,176 @@ export default function PlotModule({ project, analysis, update, readOnly }) {
         <PlotMap
           coordinates={coords}
           roadEdges={plot.road_edges || []}
+          overlays={overlays}
           readOnly={readOnly}
           onChange={(next) => setPlot("coordinates", next)}
         />
+      </Section>
+
+      <Section
+        title="Site layout engine"
+        description="Setbacks are measured inward from the boundary; front applies to edges marked road-facing below, rear is the edge opposite them. Reserve additionally carves the access ring, driveways and amenity blocks out of the envelope."
+        testid="site-layout-section"
+        actions={
+          <div className="flex gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 rounded-sm text-xs"
+              data-testid="compute-envelope-button"
+              disabled={!!running || coords.length < 3}
+              onClick={() => runStage("envelope")}
+            >
+              {running === "envelope" ? "Computing…" : "1 · Envelope"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 rounded-sm text-xs"
+              data-testid="compute-reserve-button"
+              disabled={!!running || coords.length < 3}
+              onClick={() => runStage("reserve")}
+            >
+              {running === "reserve" ? "Computing…" : "2 · Reserve roads & amenities"}
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 rounded-sm text-xs"
+              data-testid="compute-plan-button"
+              disabled={!!running || readOnly || coords.length < 3}
+              onClick={() => runStage("plan")}
+            >
+              {running === "plan" ? "Packing towers…" : "3 · Generate layout"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {["default", "front", "rear", "side"].map((k) => (
+            <NumField
+              key={k}
+              label={`Setback — ${k}`}
+              suffix="m"
+              value={setbacks[k]}
+              testid={`setback-${k}-input`}
+              onChange={(v) => setSetbacks((s) => ({ ...s, [k]: v }))}
+            />
+          ))}
+          <NumField label="Access ring width" suffix="m" value={road.ring_width} testid="road-ring-width-input"
+                    onChange={(v) => setRoad((r) => ({ ...r, ring_width: v }))} />
+          <NumField label="Driveway width" suffix="m" value={road.driveway_width} testid="road-driveway-width-input"
+                    onChange={(v) => setRoad((r) => ({ ...r, driveway_width: v }))} />
+          <NumField label="Max distance to road" suffix="m" value={road.max_distance_to_road}
+                    testid="road-max-distance-input"
+                    onChange={(v) => setRoad((r) => ({ ...r, max_distance_to_road: v }))} />
+          <NumField label="Max residential towers" suffix="blank = max that fits"
+                    value={towerCfg.max_towers} testid="tower-max-count-input"
+                    onChange={(v) => setTowerCfg((t) => ({ ...t, max_towers: v }))} />
+          <NumField label="Min floors" value={towerCfg.floors_min} testid="tower-floors-min-input"
+                    onChange={(v) => setTowerCfg((t) => ({ ...t, floors_min: v }))} />
+          <NumField label="Max floors" value={towerCfg.floors_max} testid="tower-floors-max-input"
+                    onChange={(v) => setTowerCfg((t) => ({ ...t, floors_max: v }))} />
+        </div>
+
+        {layoutError && (
+          <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-sm px-2 py-1 mt-3"
+             data-testid="layout-error">
+            {layoutError}
+          </p>
+        )}
+
+        {layout && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+              <Metric label="Envelope area" value={num(layout.envelope.area_sqm, 2)} unit="m²" testid="envelope-area" />
+              <Metric label="Of plot area" value={num(layout.envelope.pct_of_plot, 1)} unit="%" testid="envelope-pct" />
+              <Metric label="Regions" value={layout.envelope.part_count} testid="envelope-parts" />
+              <Metric label="Plot area" value={num(layout.plot.area_sqm, 2)} unit="m²" testid="envelope-plot-area" />
+            </div>
+
+            {layout.reservation_summary && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                <Metric label="Roads reserved" value={num(layout.reservation_summary.road_area_sqm, 2)} unit="m²" testid="reserve-road-area" />
+                <Metric label="Amenities" value={num(layout.reservation_summary.amenity_area_sqm, 2)} unit="m²" testid="reserve-amenity-area" />
+                <Metric label="Packable land" value={num(layout.residual.area_sqm, 2)} unit="m²" testid="reserve-packable-area" />
+                <Metric label="Packable of envelope" value={num(layout.residual.pct_of_envelope, 1)} unit="%" testid="reserve-packable-pct" />
+              </div>
+            )}
+
+            {layout.layout_metrics && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                  <Metric label="Towers packed" value={layout.layout_metrics.tower_count} testid="layout-tower-count" />
+                  <Metric label="Buildable area" value={num(layout.layout_metrics.total_buildable_area_sqm, 0)} unit="m²" testid="layout-buildable-area" />
+                  <Metric label="Achieved FAR" value={num(layout.layout_metrics.achieved_far, 3)} unit={`/ ${layout.layout_metrics.far_cap}`} testid="layout-far" />
+                  <Metric label="Units" value={layout.layout_metrics.unit_count} testid="layout-units" />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                  <Metric label="Ground coverage" value={num(layout.layout_metrics.ground_coverage_pct, 1)} unit="%" testid="layout-coverage" />
+                  <Metric label="Open space" value={num(layout.layout_metrics.open_space_pct, 1)} unit="%" testid="layout-open-space" />
+                  <Metric label="Total footprint" value={num(layout.layout_metrics.total_footprint_sqm, 0)} unit="m²" testid="layout-footprint" />
+                  <Metric label="Constraints" value={layout.layout_metrics.feasible ? "all satisfied" : "violated"} testid="layout-feasible" />
+                </div>
+                <p className="text-[11px] text-slate-500 mt-2">
+                  Saved to the project — the 3D model now renders these towers instead of the bounding-box fallback.
+                </p>
+              </>
+            )}
+
+            {layout.warnings.map((w, i) => (
+              <p key={i} className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-2"
+                 data-testid={`layout-warning-${i}`}>
+                {w}
+              </p>
+            ))}
+
+            {!!(layout.amenities || []).length && (
+              <Table className="mt-3">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Amenity</TableHead>
+                    <TableHead>Footprint</TableHead>
+                    <TableHead>Size</TableHead>
+                    <TableHead>Floors</TableHead>
+                    <TableHead>Height</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {layout.amenities.map((a) => (
+                    <TableRow key={a.key} data-testid={`amenity-row-${a.key}`}>
+                      <TableCell className="py-1 text-xs">{a.name}</TableCell>
+                      <TableCell className="py-1 font-mono text-xs">{num(a.area_sqm, 1)} m²</TableCell>
+                      <TableCell className="py-1 font-mono text-xs">{num(a.width_m, 1)} × {num(a.depth_m, 1)} m</TableCell>
+                      <TableCell className="py-1 font-mono text-xs">{a.floors}</TableCell>
+                      <TableCell className="py-1 font-mono text-xs">{num(a.height_m, 1)} m</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+
+            <Table className="mt-3">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-16">Edge</TableHead>
+                  <TableHead>Class</TableHead>
+                  <TableHead>Setback</TableHead>
+                  <TableHead>Length</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {layout.edges.map((e) => (
+                  <TableRow key={e.index} data-testid={`envelope-edge-${e.index}`}>
+                    <TableCell className="py-1 font-mono text-xs">{e.index}</TableCell>
+                    <TableCell className="py-1 text-xs capitalize">{e.class}</TableCell>
+                    <TableCell className="py-1 font-mono text-xs">{num(e.setback_m, 2)} m</TableCell>
+                    <TableCell className="py-1 font-mono text-xs">{num(e.length_m, 2)} m</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </>
+        )}
       </Section>
 
       <div className="grid lg:grid-cols-2 gap-4">
