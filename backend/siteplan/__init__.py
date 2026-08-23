@@ -1,0 +1,65 @@
+"""Site layout engine.
+
+Pure, testable geometry + optimisation over a plot polygon. Knows nothing about Leaflet,
+FastAPI or Mongo: the public functions take a project dict (or raw coordinates) and a
+config override, and return plain serialisable dicts.
+
+Stages
+  1. envelope  — plot polygon -> setback-inset buildable envelope        [implemented]
+  2. reserve   — carve perimeter road ring, driveways and amenity blocks [implemented]
+  3. pack      — greedy grid seeding of tower placement                  [implemented]
+     ga        — genetic refinement off the grid                         [next]
+"""
+from typing import Any, Dict, Optional, Sequence
+
+from .config import (AmenityBlock, AmenityConfig, GaConfig, RoadConfig, SetbackConfig,
+                     SiteLayoutConfig, TowerConfig)
+from .envelope import EnvelopeResult, build_envelope
+from .errors import LayoutError
+from .frame import LocalFrame
+from .fitness import FitnessResult, PackContext, TowerPlacement, evaluate
+from .pack import greedy_pack, pack_region
+from .plan import LayoutResult, plan, plan_site
+from .reserve import (AmenityPlacement, ReserveResult, reserve,
+                      reserve_from_coordinates, resolve_amenity_size)
+
+__all__ = [
+    "AmenityBlock", "AmenityConfig", "GaConfig", "RoadConfig", "SetbackConfig",
+    "SiteLayoutConfig", "TowerConfig", "EnvelopeResult", "LayoutError", "LocalFrame",
+    "AmenityPlacement", "ReserveResult", "LayoutResult",
+    "FitnessResult", "PackContext", "TowerPlacement", "evaluate",
+    "greedy_pack", "pack_region", "plan", "plan_site",
+    "build_envelope", "buildable_envelope", "reserve", "reserve_from_coordinates",
+    "reserve_site", "resolve_amenity_size",
+]
+
+
+def buildable_envelope(project: Dict[str, Any],
+                       overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Stage 1 entry point used by the API: project document -> serialisable envelope.
+
+    Never raises for user-fixable problems — a LayoutError comes back as
+    {"ok": False, "error": {...}} so the client can show the message inline.
+    """
+    plot = project.get("plot") or {}
+    cfg = SiteLayoutConfig.from_dict(overrides)
+    try:
+        return build_envelope(plot.get("coordinates") or [],
+                              plot.get("road_edges") or [], cfg).to_dict()
+    except LayoutError as exc:
+        return exc.to_dict()
+
+
+def reserve_site(project: Dict[str, Any],
+                 overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Stage 2 entry point: project document -> envelope + roads + amenities + residual.
+
+    The payload is a superset of stage 1's, so a client can render both from one call.
+    """
+    plot = project.get("plot") or {}
+    cfg = SiteLayoutConfig.from_dict(overrides)
+    try:
+        return reserve_from_coordinates(plot.get("coordinates") or [],
+                                        plot.get("road_edges") or [], cfg).to_dict()
+    except LayoutError as exc:
+        return exc.to_dict()

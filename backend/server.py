@@ -26,6 +26,7 @@ import gis as gislib
 import iscodes as iscodes
 import layout as layoutlib
 import reports as reportlib
+import siteplan as siteplanlib
 from defaults import default_project, default_tower, floor_layout_entry
 
 client = AsyncIOMotorClient(os.environ['MONGO_URL'])
@@ -465,6 +466,66 @@ async def engineering_live(body: AnalyseIn, user: dict = Depends(get_current_use
 async def engineering_for_project(project_id: str, user: dict = Depends(get_current_user)):
     proj = await load_project(project_id, user)
     return englib.analyse_engineering(proj, engine.analyse(proj))
+
+
+# ---------------------------------------------------------------- site layout engine
+class SiteLayoutIn(BaseModel):
+    """Partial config override; anything omitted falls back to SiteLayoutConfig defaults."""
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SiteLayoutLiveIn(SiteLayoutIn):
+    project: Dict[str, Any]
+
+
+@api.post("/projects/{project_id}/site-layout/envelope")
+async def site_layout_envelope(project_id: str, body: SiteLayoutIn,
+                               user: dict = Depends(get_current_user)):
+    """Stage 1 — buildable envelope for a saved project."""
+    proj = await load_project(project_id, user)
+    return siteplanlib.buildable_envelope(proj, body.config)
+
+
+@api.post("/site-layout/envelope")
+async def site_layout_envelope_live(body: SiteLayoutLiveIn,
+                                    user: dict = Depends(get_current_user)):
+    """Stateless envelope for live editing before save — mirrors /analyse."""
+    return siteplanlib.buildable_envelope(body.project, body.config)
+
+
+@api.post("/projects/{project_id}/site-layout/reserve")
+async def site_layout_reserve(project_id: str, body: SiteLayoutIn,
+                              user: dict = Depends(get_current_user)):
+    """Stage 2 — envelope plus reserved roads, amenities and the residual packable region."""
+    proj = await load_project(project_id, user)
+    return siteplanlib.reserve_site(proj, body.config)
+
+
+@api.post("/site-layout/reserve")
+async def site_layout_reserve_live(body: SiteLayoutLiveIn,
+                                   user: dict = Depends(get_current_user)):
+    """Stateless reservation for live editing before save."""
+    return siteplanlib.reserve_site(body.project, body.config)
+
+
+@api.post("/projects/{project_id}/site-layout/plan")
+async def site_layout_plan(project_id: str, body: SiteLayoutIn,
+                           user: dict = Depends(get_current_user)):
+    """Stage 3 — full layout: envelope, reservation and packed towers."""
+    proj = await load_project(project_id, user)
+    return siteplanlib.plan_site(proj, body.config)
+
+
+@api.post("/site-layout/plan")
+async def site_layout_plan_live(body: SiteLayoutLiveIn,
+                                user: dict = Depends(get_current_user)):
+    """Stateless full layout for live editing before save."""
+    return siteplanlib.plan_site(body.project, body.config)
+
+
+@api.get("/site-layout/defaults")
+async def site_layout_defaults():
+    return {"config": siteplanlib.SiteLayoutConfig().to_dict()}
 
 
 @api.get("/iscodes")

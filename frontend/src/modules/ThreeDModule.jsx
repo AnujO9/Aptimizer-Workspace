@@ -10,10 +10,11 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  ROOM_COLORS, UNIT_COLORS, featureShapes, localBounds, originOf, polyToLocal, sunAtHour, sunVector,
-  terrainHeights, towerLayout,
+  ROOM_COLORS, UNIT_COLORS, engineSiteShapes, engineTowerLayout, featureShapes, localBounds,
+  originOf, polyToLocal, sunAtHour, sunVector, terrainHeights, towerLayout,
 } from "@/lib/scene";
 import { money, num } from "@/lib/format";
+import { api, apiError } from "@/lib/api";
 
 const TOWER_RULE_PARAMS = {
   min_stair_width: (tm) => tm.stair_min_width,
@@ -126,6 +127,45 @@ const FlatFeatures = ({ items, color, y = 0.06 }) =>
     );
   });
 
+/** Reserved circulation, drawn flat on the ground plane.
+ *
+ *  A THREE.Shape built from (x, z) pairs sits in the shape's local XY plane; rotating by
+ *  +PI/2 about X maps (x, z, 0) -> (x, 0, z), which is the scene frame. (Note the older
+ *  featureShapes helper above uses -PI/2, which mirrors the z axis — see the GIS overlay.)
+ */
+const RoadLayer = ({ rings, color, y, opacity = 0.75 }) =>
+  (rings || []).map((pts, i) =>
+    pts.length < 3 ? null : (
+      <mesh key={i} rotation={[Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
+        <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
+        <meshStandardMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} />
+      </mesh>
+    )
+  );
+
+/** Standalone low-rise amenity blocks — clubhouse, gym, pool. */
+const AmenityMesh = ({ block }) => (
+  <group position={[block.x, 0, block.z]} rotation={[0, block.rotationY || 0, 0]}>
+    <mesh position={[0, block.height / 2, 0]} castShadow receiveShadow>
+      <boxGeometry args={[block.w, block.height, block.d]} />
+      <meshStandardMaterial
+        color={block.key === "pool" ? "#38BDF8" : "#A78BFA"}
+        transparent
+        opacity={block.key === "pool" ? 0.75 : 0.95}
+        roughness={0.7}
+      />
+    </mesh>
+    <Html position={[0, block.height + 3, 0]} center>
+      <div
+        className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm border bg-violet-50 border-violet-300 text-violet-800"
+        data-testid={`amenity-label-${block.key}`}
+      >
+        {block.name}
+      </div>
+    </Html>
+  </group>
+);
+
 const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, violations, onSelect, layers }) => {
   const slabRef = useRef();
   const visibleFloors = sectionFloor ? Math.min(sectionFloor, tower.floors) : tower.floors;
@@ -141,8 +181,9 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
     const c = new THREE.Color();
     const types = (tower.units || []).map((u) => u.type);
     for (let i = 0; i < visibleFloors; i += 1) {
+      // Local to the tower group, which already carries its position and rotation.
       m.compose(
-        new THREE.Vector3(tower.x, i * tower.floorHeight + tower.floorHeight * 0.45, tower.z),
+        new THREE.Vector3(0, i * tower.floorHeight + tower.floorHeight * 0.45, 0),
         new THREE.Quaternion(),
         new THREE.Vector3(tower.w, tower.floorHeight * 0.82, tower.d)
       );
@@ -157,14 +198,21 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
   }, [detailed, tower, visibleFloors, violations.length]);
 
   return (
-    <group onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+    // Position and rotation live on the group, so every child is expressed in the tower's
+    // own frame and an engine-supplied rotation applies to slabs, balconies and labels
+    // together instead of each having to re-derive it.
+    <group
+      position={[tower.x, 0, tower.z]}
+      rotation={[0, tower.rotationY || 0, 0]}
+      onClick={(e) => { e.stopPropagation(); onSelect(); }}
+    >
       {detailed ? (
         <instancedMesh ref={slabRef} args={[null, null, Math.max(tower.floors, 1)]} castShadow>
           <boxGeometry args={[1, 1, 1]} />
           <meshStandardMaterial color="#FFFFFF" transparent opacity={dimmed ? 0.25 : 0.95} roughness={0.6} />
         </instancedMesh>
       ) : (
-        <mesh position={[tower.x, (visibleFloors * tower.floorHeight) / 2, tower.z]} castShadow>
+        <mesh position={[0, (visibleFloors * tower.floorHeight) / 2, 0]} castShadow>
           <boxGeometry args={[tower.w, visibleFloors * tower.floorHeight, tower.d]} />
           <meshStandardMaterial color={color} transparent opacity={dimmed ? 0.2 : 0.92} roughness={0.6} />
         </mesh>
@@ -172,13 +220,13 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
 
       {layers.balconies &&
         Array.from({ length: visibleFloors }).map((_, i) => (
-          <mesh key={i} position={[tower.x + tower.w / 2 + 0.8, i * tower.floorHeight + 1, tower.z]}>
+          <mesh key={i} position={[tower.w / 2 + 0.8, i * tower.floorHeight + 1, 0]}>
             <boxGeometry args={[1.6, 0.25, tower.d * 0.5]} />
             <meshStandardMaterial color="#CBD5E1" />
           </mesh>
         ))}
 
-      <Html position={[tower.x, visibleFloors * tower.floorHeight + 4, tower.z]} center>
+      <Html position={[0, visibleFloors * tower.floorHeight + 4, 0]} center>
         <div
           onClick={onSelect}
           onPointerDown={(e) => e.stopPropagation()}
@@ -192,7 +240,7 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
         </div>
       </Html>
       {metrics && selected && (
-        <Html position={[tower.x, visibleFloors * tower.floorHeight + 9, tower.z]} center>
+        <Html position={[0, visibleFloors * tower.floorHeight + 9, 0]} center>
           <div className="text-[10px] font-mono bg-blue-600 text-white px-1.5 py-0.5 rounded-sm">isolated</div>
         </Html>
       )}
@@ -368,7 +416,7 @@ const WalkController = ({ enabled, y }) => {
 };
 
 // ------------------------------------------------------------------ module
-export default function ThreeDModule({ project, analysis }) {
+export default function ThreeDModule({ project, analysis, update, readOnly }) {
   const [view, setView] = useState("site");
   const [detailed, setDetailed] = useState(false);
   const [simpleView, setSimpleView] = useState(false);
@@ -379,25 +427,37 @@ export default function ThreeDModule({ project, analysis }) {
   const [season, setSeason] = useState("equinox");
   const [towerIdx, setTowerIdx] = useState(0);
   const [selected, setSelected] = useState(null);
-  const [layers, setLayers] = useState({ parking: true, balconies: true, common: true, violations: true });
+  const [layers, setLayers] = useState({ parking: true, balconies: true, common: true, violations: true, site: true });
+  const [autoRun, setAutoRun] = useState("");   // "", "running", or an error message
+  const autoRanRef = useRef(false);             // fires at most once per mount
 
-  const coords = project.plot?.coordinates || [];
+  // Memoised so the `|| []` fallback does not hand the scene a fresh array — and so a
+  // fresh rebuild of the whole scene — on every render.
+  const coords = useMemo(() => project.plot?.coordinates || [], [project.plot?.coordinates]);
   const gis = project.gis;
+
+  const siteLayout = project.site_layout;
 
   const scene = useMemo(() => {
     if (coords.length < 3) return null;
     const origin = originOf(coords);
     const pts = polyToLocal(coords, origin);
     const bounds = localBounds(pts);
+    // Prefer the site layout engine, whose footprints are guaranteed inside the setback
+    // envelope. towerLayout is the bounding-box fallback and can place towers outside a
+    // non-rectangular boundary — it applies only until a layout has been generated.
+    const engine = engineTowerLayout(siteLayout, project.towers || []);
     return {
       origin, pts, bounds,
-      towers: towerLayout(project.towers || [], bounds),
+      towers: engine || towerLayout(project.towers || [], bounds),
+      fromEngine: !!engine,
+      site: engine ? engineSiteShapes(siteLayout) : null,
       terrain: terrainHeights(gis, origin, bounds),
       buildings: featureShapes(gis, origin, "buildings"),
       green: featureShapes(gis, origin, "green", 25),
       water: featureShapes(gis, origin, "water", 15),
     };
-  }, [coords, project.towers, gis]);
+  }, [coords, project.towers, siteLayout, gis]);
 
   const tower = scene?.towers[towerIdx];
   const tm = analysis?.areas?.towers?.[towerIdx];
@@ -410,6 +470,34 @@ export default function ThreeDModule({ project, analysis }) {
   useEffect(() => {
     if (tower && floor > tower.floors) setFloor(tower.floors);
   }, [tower, floor]);
+
+  // Generate a layout on first view rather than making the user find the button in
+  // another module — the bounding-box fallback is never what anyone wants to look at.
+  // Preview mode keeps it responsive; Plot & Site runs the full search.
+  //
+  // The ref guard is load-bearing: on success this writes site_layout back through
+  // update(), and if that write did not land (save failure, reload) a state-only guard
+  // would let the effect fire again on the next render, in a loop.
+  useEffect(() => {
+    if (siteLayout || autoRanRef.current || readOnly || !update || coords.length < 3) return;
+    autoRanRef.current = true;
+    let cancelled = false;
+    setAutoRun("running");
+    api
+      .post("/site-layout/plan", { project, config: { fast_preview: true } })
+      .then(({ data }) => {
+        if (cancelled) return;
+        if (data.ok) {
+          update((p) => { p.site_layout = data; });
+          setAutoRun("");
+        } else {
+          setAutoRun(data.error?.message || "failed");
+        }
+      })
+      .catch((e) => { if (!cancelled) setAutoRun(apiError(e.response?.data?.detail)); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteLayout, coords.length, readOnly]);
 
   if (!scene)
     return (
@@ -440,6 +528,25 @@ export default function ThreeDModule({ project, analysis }) {
 
   return (
     <div className="space-y-4">
+      {!scene.fromEngine && (
+        <p
+          className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1"
+          data-testid="three-bbox-fallback-hint"
+        >
+          {autoRun === "running" ? (
+            <>Generating a site layout — towers, roads and amenity blocks will appear in a moment…</>
+          ) : autoRun ? (
+            <>Could not generate a site layout ({autoRun}). Towers below use the legacy
+              bounding-box fallback, which ignores the plot shape and can place them outside
+              the boundary. Adjust the setbacks in <span className="font-semibold">Plot &amp; Site</span> and retry.</>
+          ) : (
+            <>Towers are positioned by the legacy bounding-box fallback, which ignores the plot
+              shape — on a non-rectangular boundary they can sit outside it. Run{" "}
+              <span className="font-semibold">Plot &amp; Site → 3 · Generate layout</span> to place
+              them with the site layout engine.</>
+          )}
+        </p>
+      )}
       <Section
         title="3D visualisation"
         description="Live from the same project document — plot polygon, GIS terrain, towers, floors, parking and compliance state."
@@ -618,6 +725,17 @@ export default function ThreeDModule({ project, analysis }) {
                   <InstancedBuildings items={scene.buildings} />
                   <FlatFeatures items={scene.green} color="#16A34A" y={0.08} />
                   <FlatFeatures items={scene.water} color="#0EA5E9" y={0.1} />
+                </>
+              )}
+
+              {/* Reserved circulation and amenity blocks from the site layout engine. */}
+              {scene.site && view !== "floorplan" && layers.site && (
+                <>
+                  <RoadLayer rings={scene.site.ring} color="#F59E0B" y={0.14} opacity={0.8} />
+                  <RoadLayer rings={scene.site.driveways} color="#FBBF24" y={0.16} opacity={0.85} />
+                  {scene.site.amenities.map((a) => (
+                    <AmenityMesh key={a.key} block={a} />
+                  ))}
                 </>
               )}
 
