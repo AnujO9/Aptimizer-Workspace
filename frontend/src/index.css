@@ -76,3 +76,11 @@ body {
         display: contents !important;
     }
 }
+
+/* Anchor navigation on the landing page. Held behind motion-safe so a visitor
+   who has asked for reduced motion still gets an instant jump. */
+@media (prefers-reduced-motion: no-preference) {
+    html {
+        scroll-behavior: smooth;
+    }
+}
