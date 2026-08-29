@@ -370,6 +370,17 @@ PROMPTS = {
         "input that weakens the calculation). Cite IS/NBC clauses that appear in the "
         "JSON. Under 500 words."
     ),
+    "finance": _BASE + (
+        " Review this development's financial case for the investor or promoter putting "
+        "money in -- not for an engineer. Sections: **Verdict** (2-3 sentences: is this "
+        "worth building, on what margin and return), **What Drives the Return** (bullets "
+        "-- which of sale rate, land cost, construction cost or timing moves the outcome "
+        "most), **Risks** (bullets -- what happens if sales are slower than assumed or "
+        "the sale rate has to drop; name the break-even rate and how much headroom sits "
+        "above it), and **What Would Improve It** (bullets, each with the rough scale of "
+        "the gain). Explain IRR and payback in one clause each the first time you use "
+        "them. Under 450 words."
+    ),
     "compare": _BASE + (
         " Two design schemes for the same project are given. Write: **Headline** (1-2 "
         "sentences naming which scheme is stronger overall and on what grounds), "

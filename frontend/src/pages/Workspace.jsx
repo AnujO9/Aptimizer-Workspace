@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Map, Building2, Calculator, Car, ClipboardList, Wallet, ShieldCheck, FileText, History, CalendarClock,
-  Globe2, Box, Ruler,
+  Globe2, Box, Ruler, TrendingUp,
 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { TopBar } from "../components/TopBar";
@@ -21,6 +21,7 @@ import ParkingModule from "../modules/ParkingModule";
 import BoqModule from "../modules/BoqModule";
 import CostModule from "../modules/CostModule";
 import ProgrammeModule from "../modules/ProgrammeModule";
+import FinanceModule from "../modules/FinanceModule";
 import ComplianceModule from "../modules/ComplianceModule";
 import ReportsModule from "../modules/ReportsModule";
 import CollaborationModule from "../modules/CollaborationModule";
@@ -49,6 +50,7 @@ const GROUPS = [
     ["boq", "BOQ & Quantities", ClipboardList, BoqModule],
     ["cost", "Cost Estimation", Wallet, CostModule],
     ["programme", "Programme", CalendarClock, ProgrammeModule],
+    ["finance", "Feasibility & ROI", TrendingUp, FinanceModule],
   ]],
   ["deliver", "Deliver", [
     ["compliance", "Compliance", ShieldCheck, ComplianceModule],

@@ -23,6 +23,7 @@ import ai as ailib
 import auth as authlib
 import engine
 import engineering as englib
+import finance as financelib
 import gis as gislib
 import iscodes as iscodes
 import layout as layoutlib
@@ -769,6 +770,54 @@ async def ai_compare(project_id: str, a: str = "", b: str = "",
                                 if schemes[0]["metrics"].get(k) != schemes[1]["metrics"].get(k)],
     }
     return await _run_ai("compare", context, project_id=project_id)
+
+
+# ---------------------------------------------------------------- development finance
+class FinanceIn(BaseModel):
+    """Partial config; anything omitted falls back to FinanceConfig defaults."""
+    config: Dict[str, Any] = Field(default_factory=dict)
+    save: bool = True           # keep the inputs on the project so the tab reopens as left
+
+
+@api.get("/finance/defaults")
+async def finance_defaults(user: dict = Depends(get_current_user)):
+    return financelib.FinanceConfig().to_dict()
+
+
+@api.post("/projects/{project_id}/finance")
+async def project_finance(project_id: str, body: FinanceIn,
+                          user: dict = Depends(get_current_user)):
+    """Revenue, profit, return and cash flow for a project the engine can already price."""
+    proj = await load_project(project_id, user, write=body.save)
+    result = financelib.analyse(proj, engine.analyse(proj), body.config)
+    if body.save:
+        await db.projects.update_one(
+            {"_id": oid(project_id)},
+            {"$set": {"finance": result["config"], "updated_at": now_iso()}})
+    return result
+
+
+@api.post("/projects/{project_id}/ai/finance")
+async def ai_finance(project_id: str, body: FinanceIn = FinanceIn(),
+                     user: dict = Depends(get_current_user)):
+    """Body is optional: with none, the assumptions last saved on the project are used."""
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    fin = financelib.analyse(proj, an, body.config or proj.get("finance"))
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "scale": {"builtup_area_sqm": an["areas"]["builtup_area_sqm"],
+                  "total_units": an["areas"]["total_units"],
+                  "saleable_sqft": fin["saleable"]["total_sqft"]},
+        "assumptions": fin["config"],
+        "revenue_inr": fin["revenue"],
+        "cost_inr": fin["cost"],
+        "profit_inr": fin["profit"],
+        "break_even": fin["break_even"],
+        "timing": fin["timing"],
+    }
+    return await _run_ai("finance", context, store_at="ai.finance",
+                         project_id=project_id, user=user, activity="ai.finance")
 
 
 # ---------------------------------------------------------------- programme

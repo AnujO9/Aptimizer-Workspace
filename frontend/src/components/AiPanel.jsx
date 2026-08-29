@@ -52,6 +52,7 @@ export function AiPanel({
   description,
   endpoint,
   method = "post",
+  body,                    // optional POST payload, for endpoints that analyse live inputs
   initial = null,
   onGenerated,
   readOnly = false,
@@ -73,7 +74,7 @@ export function AiPanel({
   const run = async () => {
     setBusy(true);
     try {
-      const { data } = method === "get" ? await api.get(endpoint) : await api.post(endpoint);
+      const { data } = method === "get" ? await api.get(endpoint) : await api.post(endpoint, body);
       setResult(data);
       if (onGenerated) onGenerated(data);
       toast.success("AI analysis generated");
