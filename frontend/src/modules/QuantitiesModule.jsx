@@ -1,7 +1,7 @@
-import { Metric, Section } from "@/components/Field";
-import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { int, num } from "@/lib/format";
+import { Metric, Section } from "../components/Field";
+import { Input } from "../components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { int, num } from "../lib/format";
 
 export default function QuantitiesModule({ project, analysis, update, readOnly }) {
   const q = analysis?.quantities;

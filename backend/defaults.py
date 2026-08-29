@@ -74,10 +74,18 @@ def _plot_jitter(seed_text, scale=0.0035):
     return fx * scale, fy * scale
 
 
-def default_project(name, client, location, plot_reference, owner_id):
-    base_lat, base_lng = iscodes.city_center(location)
-    jx, jy = _plot_jitter(f"{plot_reference}|{name}")
-    lat, lng = base_lat + jy, base_lng + jx
+def default_project(name, client, location, plot_reference, owner_id, latitude=None, longitude=None):
+    """`latitude`/`longitude`, when supplied, are the plot's actual GPS coordinates and are
+    used directly as the placeholder box's centre. There is no public geocoder for Indian
+    cadastral survey numbers, so a survey/plot reference alone cannot be resolved to a real
+    location -- without coordinates we fall back to a small deterministic offset from the
+    selected city's centre, purely as a starting point for the user to redraw over."""
+    if latitude is not None and longitude is not None:
+        lat, lng = float(latitude), float(longitude)
+    else:
+        base_lat, base_lng = iscodes.city_center(location)
+        jx, jy = _plot_jitter(f"{plot_reference}|{name}")
+        lat, lng = base_lat + jy, base_lng + jx
     _city = iscodes.city_reference(next((c for c in iscodes.CITIES if c.lower() in (location or "").lower()), location))
     d_lat, d_lng = 0.00045, 0.00072  # ~100 m × 160 m box around the location centre
     return {

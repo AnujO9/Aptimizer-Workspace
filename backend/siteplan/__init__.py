@@ -12,6 +12,8 @@ Stages
 """
 from typing import Any, Dict, Optional, Sequence
 
+from .devcontrols import recommend as recommend_controls
+from .version import ENGINE_VERSION, polygon_signature
 from .config import (AmenityBlock, AmenityConfig, GaConfig, RoadConfig, SetbackConfig,
                      SiteLayoutConfig, TowerConfig)
 from .envelope import EnvelopeResult, build_envelope
@@ -29,6 +31,7 @@ __all__ = [
     "AmenityPlacement", "ReserveResult", "LayoutResult",
     "FitnessResult", "PackContext", "TowerPlacement", "evaluate",
     "greedy_pack", "pack_region", "plan", "plan_site",
+    "ENGINE_VERSION", "polygon_signature", "recommend_controls",
     "build_envelope", "buildable_envelope", "reserve", "reserve_from_coordinates",
     "reserve_site", "resolve_amenity_size",
 ]

@@ -1,9 +1,10 @@
 import { toast } from "sonner";
 import { Download, FileSpreadsheet } from "lucide-react";
-import { downloadFile } from "@/lib/api";
-import { Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { int, money, num } from "@/lib/format";
+import { downloadFile } from "../lib/api";
+import { Section } from "../components/Field";
+import { AiPanel } from "../components/AiPanel";
+import { Button } from "../components/ui/button";
+import { int, money, num } from "../lib/format";
 
 const REPORTS = [
   ["executive", "Executive Summary", "One-page overview across every module"],
@@ -20,7 +21,7 @@ const REPORTS = [
   ["utilities", "Utility Report", "Water, tanks, STP/WTP, RWH and plant rooms"],
 ];
 
-export default function ReportsModule({ project, analysis, projectId }) {
+export default function ReportsModule({ project, analysis, projectId, readOnly, setProject }) {
   const a = analysis;
   const dl = async (path, name) => {
     try {
@@ -77,6 +78,17 @@ export default function ReportsModule({ project, analysis, projectId }) {
           </Button>
         </div>
       </div>
+
+      <AiPanel
+        title="AI executive summary"
+        description="A client-facing narrative of scale, cost, compliance and the open decisions, written from the figures above"
+        endpoint={`/projects/${projectId}/ai/report`}
+        initial={project?.ai?.report}
+        onGenerated={(d) => setProject?.((p) => ({ ...p, ai: { ...(p.ai || {}), report: d } }))}
+        readOnly={readOnly}
+        testid="ai-report"
+        emptyHint="Draft a plain-language summary for the client, covering what this project is, what it costs and what still needs a decision."
+      />
     </div>
   );
 }

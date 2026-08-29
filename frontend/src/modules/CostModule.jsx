@@ -1,11 +1,12 @@
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Metric, Section } from "@/components/Field";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { money, num } from "@/lib/format";
+import { Metric, Section } from "../components/Field";
+import { AiPanel } from "../components/AiPanel";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { money, num } from "../lib/format";
 
 const COLORS = ["#2563EB", "#0F172A", "#F59E0B"];
 
-export default function CostModule({ analysis }) {
+export default function CostModule({ analysis, project, projectId, readOnly, setProject }) {
   const c = analysis?.cost;
   const a = analysis?.areas;
   if (!c) return <p className="text-sm text-slate-500">Calculating cost…</p>;
@@ -89,6 +90,17 @@ export default function CostModule({ analysis }) {
           </TableBody>
         </Table>
       </Section>
+
+      <AiPanel
+        title="AI cost review"
+        description="Flags unit rates that look out of range and identifies the main cost drivers and savings"
+        endpoint={`/projects/${projectId}/ai/cost`}
+        initial={project?.ai?.cost}
+        onGenerated={(d) => setProject?.((p) => ({ ...p, ai: { ...(p.ai || {}), cost: d } }))}
+        readOnly={readOnly}
+        testid="ai-cost"
+        emptyHint="Review the estimate against typical Indian residential construction rates and surface savings opportunities."
+      />
     </div>
   );
 }

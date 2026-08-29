@@ -1,6 +1,7 @@
 """Single source of truth for every IS / NBC constant used by the engineering modules.
 Update values here when a code is revised — no module hardcodes its own numbers.
 """
+import math
 
 # ---------------------------------------------------------------- clause registry
 CLAUSES = {
@@ -13,6 +14,9 @@ CLAUSES = {
     "load_combo": {"code": "IS 456:2000", "clause": "Table 18", "topic": "Partial safety factors (1.5 DL + 1.5 LL)"},
     "column_design": {"code": "IS 456:2000", "clause": "Cl. 39.3", "topic": "Short axially loaded column with ties"},
     "column_min": {"code": "IS 456:2000", "clause": "Cl. 25.1.1", "topic": "Minimum column dimension 230 mm"},
+    "wind_force": {"code": "IS 875 (Part 3):2015", "clause": "Cl. 7.4", "topic": "Wind force F = Cf x Ae x pd"},
+    "column_slender": {"code": "IS 456:2000", "clause": "Cl. 25.1.2 / 39.7", "topic": "Short vs slender column, additional moments"},
+    "column_ecc": {"code": "IS 456:2000", "clause": "Cl. 25.4 / 39.3", "topic": "Minimum eccentricity limit on the axial-only expression"},
     "beam_depth": {"code": "IS 456:2000", "clause": "Cl. 23.2.1", "topic": "Span/depth ratio (L/12 preliminary)"},
     "flat_slab": {"code": "IS 456:2000", "clause": "Cl. 31", "topic": "Flat slab applicability"},
     "seismic_zone": {"code": "IS 1893 (Part 1):2016", "clause": "Table 3 / Annex E", "topic": "Seismic zone factor Z"},
@@ -48,7 +52,7 @@ CLAUSES = {
     "parking_accessible": {"code": "NBC 2016 Part 3 / RPwD Act 2016", "clause": "Cl. 13.4", "topic": "1 accessible bay per 50 spaces"},
     "parking_ev": {"code": "BEE / MoHUA EV Guidelines 2019", "clause": "Cl. 4.2", "topic": "20% EV-ready parking"},
     "parking_2w": {"code": "SP:21", "clause": "Cl. 8.4.2", "topic": "1 ECS = 3 two-wheeler spaces"},
-    "fire_travel": {"code": "NBC 2016 Part 4", "clause": "Cl. 4.6.2", "topic": "Travel distance to exit ≤ 22.5 m (residential)"},
+    "fire_travel": {"code": "NBC 2016 Part 4", "clause": "Cl. 4.6.2", "topic": "Travel distance to exit ≤ 30 m (Group A-2 residential, Table 4)"},
     "fire_stairs": {"code": "NBC 2016 Part 4", "clause": "Cl. 4.7", "topic": "Two staircases above 24 m, 1.5 m clear width"},
     "fire_refuge": {"code": "NBC 2016 Part 4", "clause": "Cl. 4.14", "topic": "Refuge area every 7th floor above 24 m"},
     "fire_ext": {"code": "NBC 2016 Part 4 / IS 2190", "clause": "Table 7", "topic": "1 extinguisher per 200 m² floor area"},
@@ -83,8 +87,85 @@ WIND_KD = 0.90  # Cl. 7.2.1 wind directionality
 WIND_KA = 0.90  # Cl. 7.2.2 area averaging (typical > 100 m²)
 WIND_KC = 0.90  # Cl. 7.3.3.13 combination factor
 
+# ---------------------------------------------------------------- IS 875-3 Cl. 7.4
+# Force coefficient Cf for rectangular clad buildings: F = Cf x Ae x pd. Omitting it
+# (i.e. taking Cf = 1.0) under-states the lateral force by 20-40%, which is the
+# unconservative direction, so it is applied explicitly.
+#
+# !! VERIFY BEFORE RELYING ON THESE FIGURES !!
+# This reproduces the *shape* of IS 875 (Part 3):2015 Table 26 — Cf rising with both plan
+# aspect a/b and slenderness h/b. The individual cell values have NOT been checked against
+# a controlled copy of the standard. WIND_CF_VERIFIED stays False until someone does that,
+# and the engineering module surfaces that state next to the number.
+WIND_CF_VERIFIED = False
+WIND_CF_MIN = 1.20              # floor applied regardless of interpolation
+WIND_CF_HB = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]           # h/b breakpoints
+WIND_CF_TABLE = {               # a/b -> Cf at each h/b breakpoint
+    0.25: [1.20, 1.30, 1.40, 1.50, 1.60, 1.75],
+    0.50: [1.15, 1.25, 1.35, 1.45, 1.55, 1.70],
+    1.00: [1.10, 1.20, 1.30, 1.40, 1.50, 1.60],
+    2.00: [1.05, 1.15, 1.25, 1.35, 1.45, 1.55],
+    4.00: [1.00, 1.10, 1.20, 1.30, 1.40, 1.50],
+}
+
+
+def wind_force_coefficient(a_over_b: float, h_over_b: float) -> float:
+    """Cf by bilinear interpolation on the table above, floored at WIND_CF_MIN."""
+    ratios = sorted(WIND_CF_TABLE)
+    ab = min(max(a_over_b, ratios[0]), ratios[-1])
+    lo = max([r for r in ratios if r <= ab], default=ratios[0])
+    hi = min([r for r in ratios if r >= ab], default=ratios[-1])
+
+    def along_hb(row):
+        hb = min(max(h_over_b, WIND_CF_HB[0]), WIND_CF_HB[-1])
+        for i in range(len(WIND_CF_HB) - 1):
+            x0, x1 = WIND_CF_HB[i], WIND_CF_HB[i + 1]
+            if x0 <= hb <= x1:
+                t = (hb - x0) / (x1 - x0) if x1 > x0 else 0.0
+                return row[i] + t * (row[i + 1] - row[i])
+        return row[-1]
+
+    c_lo, c_hi = along_hb(WIND_CF_TABLE[lo]), along_hb(WIND_CF_TABLE[hi])
+    cf = c_lo if hi == lo else c_lo + (c_hi - c_lo) * (ab - lo) / (hi - lo)
+    return max(round(cf, 3), WIND_CF_MIN)
+
 # ---------------------------------------------------------------- IS 1893:2016
 ZONE_FACTOR = {"II": 0.10, "III": 0.16, "IV": 0.24, "V": 0.36}
+
+# Cl. 7.6.2 — approximate fundamental period. Which formula applies depends on whether
+# the frame carries masonry infill, and it matters: an infilled frame is far stiffer, so
+# its period is shorter, which puts it higher on the response spectrum and demands MORE
+# base shear. Using the bare-frame formula on a building with brick infill under-states
+# the demand — the unconservative direction.
+#   bare_frame   Ta = 0.075 h^0.75   (RC moment-resisting frame, no infill)
+#   brick_infill Ta = 0.09 h / sqrt(d)   (d = base dimension in the direction considered)
+SEISMIC_FRAME_TYPES = {
+    "bare_frame": "RC moment frame without masonry infill",
+    "brick_infill": "RC moment frame with brick infill panels",
+    "shear_wall": "RC structural wall / dual system",
+}
+DEFAULT_FRAME_TYPE = "brick_infill"   # residential apartments are infilled by default
+
+
+def seismic_period(height_m, base_dim_m, frame_type="brick_infill"):
+    """Approximate Ta per IS 1893 (Part 1):2016 Cl. 7.6.2.
+
+    Returns (Ta, formula description). For infilled and wall systems the code period is
+    taken as the governing (shorter) of the applicable expression and the bare-frame one,
+    since a shorter period is the conservative choice for design base shear.
+    """
+    h = max(float(height_m), 3.0)
+    bare = 0.075 * h ** 0.75
+    if frame_type == "bare_frame":
+        return bare, "0.075 h^0.75 (bare RC moment frame)"
+
+    d = max(float(base_dim_m or 0.0), 1.0)
+    infilled = 0.09 * h / math.sqrt(d)
+    if frame_type == "shear_wall":
+        # Cl. 7.6.2(d) needs the shear wall area Aw, which this tool does not model, so
+        # the infill expression is used as a stand-in and reported as such.
+        return min(bare, infilled), f"0.09 h / sqrt(d), d = {d:.1f} m (wall system approximation)"
+    return min(bare, infilled), f"0.09 h / sqrt(d), d = {d:.1f} m (brick infill)"
 SOIL_SEISMIC_TYPE = {
     "hard rock": "I", "gravel": "II", "dense sand": "II", "stiff clay": "II", "soft clay": "III",
 }
@@ -138,9 +219,17 @@ PARKING = {
 
 # ---------------------------------------------------------------- NBC fire
 FIRE = {
-    "max_travel_m": 22.5, "stair_min_width_m": 1.5, "two_stair_height_m": 24.0,
+    # NBC 2016 Part 4 Table 4 gives 30 m for Group A-2 residential. This was previously
+    # 22.5 m here while engine.DEFAULT_RULES used 30 m, so the same project could pass
+    # Compliance and fail Fire Safety on one number. Both now read this key.
+    "max_travel_m": 30.0,
+    "stair_min_width_m": 1.5, "two_stair_height_m": 24.0,
     "refuge_above_m": 24.0, "refuge_every_floors": 7, "extinguisher_per_sqm": 200.0,
     "fire_lift_above_m": 30.0, "fire_lift_car": (1.1, 2.1), "pressurisation_above_m": 15.0,
+    # Means-of-egress corridor width (NBC Part 4). Distinct from the accessibility
+    # corridor in ACCESS below, which is a barrier-free requirement under Part 3 — the
+    # governing width for a project is the larger of the two.
+    "corridor_min_m": 1.5,
 }
 
 # ---------------------------------------------------------------- NBC accessibility

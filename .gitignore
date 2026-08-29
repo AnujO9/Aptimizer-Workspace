@@ -103,3 +103,8 @@ frontend_dev.log
 .emergent/
 .freebuff/
 .claude/settings.local.json
+
+# macOS AppleDouble sidecars and editor/sync temp artifacts. Several hundred of
+# these accumulate beside real sources and must never be committed.
+._*
+.!*!*

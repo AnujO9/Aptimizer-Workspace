@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { api, apiError } from "@/lib/api";
-import { TopBar } from "@/components/TopBar";
-import { Section } from "@/components/Field";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { dt } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { TopBar } from "../components/TopBar";
+import { Section } from "../components/Field";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { dt } from "../lib/format";
 
 export default function Admin() {
   const [users, setUsers] = useState([]);

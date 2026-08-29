@@ -2,43 +2,65 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
-  Map, Building2, Calculator, Car, Package, ClipboardList, Wallet, Droplets, ShieldCheck, FileText, History,
+  Map, Building2, Calculator, Car, ClipboardList, Wallet, ShieldCheck, FileText, History, CalendarClock,
   Globe2, Box, Ruler,
 } from "lucide-react";
-import { api, apiError } from "@/lib/api";
-import { TopBar } from "@/components/TopBar";
-import { MetricsStrip } from "@/components/MetricsStrip";
-import PlotModule from "@/modules/PlotModule";
-import GisModule from "@/modules/GisModule";
-import ThreeDModule from "@/modules/ThreeDModule";
-import EngineeringModule from "@/modules/EngineeringModule";
-import PlanningModule from "@/modules/PlanningModule";
-import CalculationsModule from "@/modules/CalculationsModule";
-import ParkingModule from "@/modules/ParkingModule";
-import QuantitiesModule from "@/modules/QuantitiesModule";
-import BoqModule from "@/modules/BoqModule";
-import CostModule from "@/modules/CostModule";
-import UtilitiesModule from "@/modules/UtilitiesModule";
-import ComplianceModule from "@/modules/ComplianceModule";
-import ReportsModule from "@/modules/ReportsModule";
-import CollaborationModule from "@/modules/CollaborationModule";
+import { api, apiError } from "../lib/api";
+import { TopBar } from "../components/TopBar";
+import { MetricsStrip } from "../components/MetricsStrip";
+import { CommandPalette } from "../components/CommandPalette";
+import { ProjectNav } from "../components/ProjectNav";
+import DevControlsModule from "../modules/DevControlsModule";
+import PlotModule from "../modules/PlotModule";
+import GisModule from "../modules/GisModule";
+import ThreeDModule from "../modules/ThreeDModule";
+import EngineeringModule from "../modules/EngineeringModule";
+import PlanningModule from "../modules/PlanningModule";
+import CalculationsModule from "../modules/CalculationsModule";
+import ParkingModule from "../modules/ParkingModule";
+import BoqModule from "../modules/BoqModule";
+import CostModule from "../modules/CostModule";
+import ProgrammeModule from "../modules/ProgrammeModule";
+import ComplianceModule from "../modules/ComplianceModule";
+import ReportsModule from "../modules/ReportsModule";
+import CollaborationModule from "../modules/CollaborationModule";
 
-const MODULES = [
-  ["plot", "Plot & Site", Map, PlotModule],
-  ["gis", "GIS Intelligence", Globe2, GisModule],
-  ["planning", "Apartment Planning", Building2, PlanningModule],
-  ["3d", "3D Visualisation", Box, ThreeDModule],
-  ["calculations", "Calculations", Calculator, CalculationsModule],
-  ["engineering", "IS/NBC Engineering", Ruler, EngineeringModule],
-  ["parking", "Parking", Car, ParkingModule],
-  ["quantities", "Quantities", Package, QuantitiesModule],
-  ["boq", "BOQ", ClipboardList, BoqModule],
-  ["cost", "Cost Estimation", Wallet, CostModule],
-  ["utilities", "Utilities", Droplets, UtilitiesModule],
-  ["compliance", "Compliance", ShieldCheck, ComplianceModule],
-  ["reports", "Reports", FileText, ReportsModule],
-  ["collaboration", "Versions & Team", History, CollaborationModule],
+// Grouped by the order a project actually moves: understand the land, design the
+// building, verify the engineering, price and programme it, then issue it. Two former
+// destinations were folded in rather than grouped -- Quantities is the unpriced half of
+// the BOQ, and Utilities computes the same water and storm figures as the engineering
+// water modules, which is why the two once disagreed on sump size for one project.
+const GROUPS = [
+  ["site", "Site", [
+    ["plot", "Plot & Site", Map, PlotModule],
+    ["controls", "Setbacks & Controls", Ruler, DevControlsModule],
+    ["gis", "GIS Intelligence", Globe2, GisModule],
+  ]],
+  ["design", "Design", [
+    ["planning", "Apartment Planning", Building2, PlanningModule],
+    ["parking", "Parking", Car, ParkingModule],
+    ["3d", "3D Visualisation", Box, ThreeDModule],
+  ]],
+  ["eng", "Engineering", [
+    ["calculations", "Calculations", Calculator, CalculationsModule],
+    ["engineering", "IS/NBC Engineering", Ruler, EngineeringModule],
+  ]],
+  ["commercial", "Cost & Programme", [
+    ["boq", "BOQ & Quantities", ClipboardList, BoqModule],
+    ["cost", "Cost Estimation", Wallet, CostModule],
+    ["programme", "Programme", CalendarClock, ProgrammeModule],
+  ]],
+  ["deliver", "Deliver", [
+    ["compliance", "Compliance", ShieldCheck, ComplianceModule],
+    ["reports", "Reports", FileText, ReportsModule],
+    ["collaboration", "Versions & Team", History, CollaborationModule],
+  ]],
 ];
+
+const MODULES = GROUPS.flatMap(([, , items]) => items);
+const GROUP_OF = Object.fromEntries(
+  GROUPS.flatMap(([g, , items]) => items.map((m) => [m[0], g])));
+const GROUP_LABEL = Object.fromEntries(GROUPS.map(([g, label]) => [g, label]));
 
 const EDITABLE = [
   "name", "client", "location", "plot_reference", "status", "plot", "towers", "parking", "config",
@@ -53,6 +75,7 @@ export default function Workspace() {
   const [accessRole, setAccessRole] = useState("viewer");
   const [active, setActive] = useState("plot");
   const [saveState, setSaveState] = useState("saved");
+  const [duration, setDuration] = useState(null);
   const dirty = useRef(false);
 
   useEffect(() => {
@@ -98,6 +121,20 @@ export default function Workspace() {
     return () => clearTimeout(t);
   }, [project, projectId]);
 
+  // Headline build duration for the metrics strip. Uses the summary form of the
+  // programme endpoint, which skips float verification and the 120-activity payload --
+  // the completion date does not depend on either, and this runs on every recalculation.
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.post("/schedule", { project, summary: true, config: {} })
+        .then(({ data }) => { if (!cancelled) setDuration(data.ok ? data : null); })
+        .catch(() => { if (!cancelled) setDuration(null); });
+    }, 600);   // debounce: the project mutates on every keystroke while editing
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [project]);
+
   const update = useCallback((mutator) => {
     dirty.current = true;
     setProject((prev) => {
@@ -109,6 +146,19 @@ export default function Workspace() {
 
   const readOnly = accessRole === "viewer";
   const Current = useMemo(() => MODULES.find((m) => m[0] === active)?.[3], [active]);
+
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!project)
     return (
@@ -150,41 +200,22 @@ export default function Workspace() {
         </div>
       </TopBar>
 
-      <MetricsStrip analysis={analysis} />
+      <ProjectNav
+        groups={GROUPS}
+        active={active}
+        onPick={setActive}
+        onOpenPalette={() => setPaletteOpen(true)}
+      />
 
       <div className="flex flex-1 min-h-0">
-        <aside className="w-56 shrink-0 bg-slate-900 text-slate-300 hidden md:block" data-testid="module-nav">
-          <nav className="py-3">
-            {MODULES.map(([key, label, Icon]) => (
-              <button
-                key={key}
-                onClick={() => setActive(key)}
-                data-testid={`nav-module-${key}`}
-                className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] text-left transition-colors ${
-                  active === key ? "bg-blue-600 text-white" : "hover:bg-slate-800 hover:text-white"
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {label}
-              </button>
-            ))}
-          </nav>
+        <aside
+          className="w-56 shrink-0 bg-white border-r border-slate-200 hidden md:block"
+          data-testid="metrics-panel"
+        >
+          <MetricsStrip analysis={analysis} duration={duration} vertical />
         </aside>
 
         <main className="flex-1 min-w-0 p-4 md:p-6 space-y-4" data-testid={`module-panel-${active}`}>
-          <div className="md:hidden flex gap-2 overflow-x-auto pb-2">
-            {MODULES.map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setActive(key)}
-                className={`text-xs whitespace-nowrap px-2 py-1 border rounded-sm ${
-                  active === key ? "bg-slate-900 text-white" : "bg-white border-slate-200"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           {Current && (
             <Current
               project={project}
@@ -197,6 +228,15 @@ export default function Workspace() {
           )}
         </main>
       </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        modules={MODULES}
+        groupLabel={(key) => GROUP_LABEL[GROUP_OF[key]] || ""}
+        onPick={setActive}
+        active={active}
+      />
     </div>
   );
 }

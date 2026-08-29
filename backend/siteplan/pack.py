@@ -31,13 +31,24 @@ from .reserve import _principal_axis
 
 
 def _candidate_footprints(cfg: SiteLayoutConfig) -> List[Tuple[float, float]]:
-    """Footprint sizes inside the configured area band, largest first."""
+    """Footprint sizes inside the configured area and aspect bands, largest first.
+
+    The aspect filter is what keeps the output reading as apartment bars rather than
+    cubes — see TowerConfig for why that matters beyond appearance.
+    """
+    t = cfg.towers
     out = []
-    for w in cfg.towers.candidate_widths:
-        for d in cfg.towers.candidate_depths:
+    for w in t.candidate_widths:
+        for d in t.candidate_depths:
+            w, d = float(w), float(d)
             area = w * d
-            if cfg.towers.min_footprint <= area <= cfg.towers.max_footprint:
-                out.append((float(w), float(d)))
+            if not (t.min_footprint <= area <= t.max_footprint):
+                continue
+            long_side, short_side = max(w, d), min(w, d)
+            aspect = long_side / short_side if short_side else 0.0
+            if not (t.min_aspect <= aspect <= t.max_aspect):
+                continue
+            out.append((w, d))
     return sorted(set(out), key=lambda wd: wd[0] * wd[1], reverse=True)
 
 

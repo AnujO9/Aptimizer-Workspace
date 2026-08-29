@@ -5,11 +5,14 @@
 // so nothing here promises a capability the product does not have.
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Brand, BrandMark } from "../components/Brand";
+import { ScrollScene } from "../components/ScrollScene";
 import {
   ArrowRight,
   Boxes,
   Building2,
   CheckCircle2,
+  ChevronDown,
   Compass,
   Droplets,
   FileText,
@@ -24,12 +27,12 @@ import {
   Waves,
 } from "lucide-react";
 import { motion, useMotionValueEvent, useReducedMotion, useScroll, useSpring, useTransform } from "framer-motion";
-import { useAuth } from "@/context/AuthContext";
-import { LANDING } from "@/constants/testIds";
-import BlueprintPlot from "@/components/landing/BlueprintPlot";
-import CountUp from "@/components/landing/CountUp";
-import ReactiveButton from "@/components/landing/ReactiveButton";
-import { Reveal, RevealItem, Stagger } from "@/components/landing/Reveal";
+import { useAuth } from "../context/AuthContext";
+import { LANDING } from "../constants/testIds";
+import CountUp from "../components/landing/CountUp";
+import ReactiveButton from "../components/landing/ReactiveButton";
+import { Reveal, RevealItem, Stagger } from "../components/landing/Reveal";
+import QuickNavDock from "../components/landing/QuickNavDock";
 
 // The layout pipeline, in the order the engine runs it.
 const PIPELINE = [
@@ -95,6 +98,8 @@ function SectionLabel({ children }) {
   );
 }
 
+const HERO_FRAMES = [1, 10, 20, 30, 38, 45, 52, 60];
+
 export default function Landing() {
   const { user } = useAuth();
   const signedIn = Boolean(user);
@@ -106,12 +111,13 @@ export default function Landing() {
   const { scrollYProgress } = useScroll();
   const progress = useSpring(scrollYProgress, { stiffness: 140, damping: 30, mass: 0.3 });
 
-  // Drift the hero drawing slightly slower than the page for depth.
+  // The hero is a tall scroll runway with a sticky viewport inside it: the sequence needs
+  // travel to scrub through, and a one-screen section gives it none.
   const { scrollYProgress: heroProgress } = useScroll({
     target: heroRef,
     offset: ["start start", "end start"],
   });
-  const plotY = useTransform(heroProgress, [0, 1], [0, reduced ? 0 : 64]);
+  const cueFade = useTransform(heroProgress, [0, 0.12], [1, 0]);
 
   useMotionValueEvent(scrollYProgress, "change", (v) => {
     setNavSolid(v > 0.01);
@@ -141,10 +147,7 @@ export default function Landing() {
       >
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <Link to="/" className="flex items-center gap-2" data-testid={LANDING.navBrand}>
-            <span className="grid h-8 w-8 place-items-center rounded-sm bg-blue-600">
-              <Ruler className="h-4 w-4 text-white" />
-            </span>
-            <span className="text-lg font-semibold tracking-tight text-slate-900">Aptimizer</span>
+            <Brand markClass="h-9 w-auto" wordClass="text-lg" />
           </Link>
 
           <nav className="hidden items-center gap-8 md:flex">
@@ -188,75 +191,113 @@ export default function Landing() {
         </div>
       </header>
 
-      {/* Hero */}
-      <section ref={heroRef} className="relative overflow-hidden" data-testid={LANDING.hero}>
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-20 lg:grid-cols-[1.05fr_0.95fr] lg:py-28">
-          <div>
-            <Reveal y={0} immediate>
-              <SectionLabel>Civil engineering platform</SectionLabel>
-            </Reveal>
+      {/* Hero: the build sequence scrubs with the scroll -- sketch, dimensioned plan, 3D
+          model, structure, logo -- which is the product's own story in order. The outer
+          section is the scroll runway; the inner div is what the visitor actually sees. */}
+      <section
+        ref={heroRef}
+        className="relative h-[280vh]"
+        data-testid={LANDING.hero}
+      >
+        {/* Ground sampled from the render's own paper, with the same soft vignette, so the
+            blank lead-in and the first frame are indistinguishable. */}
+        <div
+          className="sticky top-0 isolate flex h-screen items-center overflow-hidden"
+          style={{ background: "radial-gradient(120% 90% at 50% 35%, #DCD8CB 0%, #CECBBE 45%, #B2B5B1 100%)" }}
+        >
+          {/* The sequence gets the screen to itself. Nothing is laid over it: white copy on
+              a pale studio render needed an 85% black scrim to stay readable, which is what
+              made the render look flat and grey. The pitch now sits in its own section
+              below, where it needs no scrim at all. */}
+          <ScrollScene target={heroRef} frames={HERO_FRAMES} leadIn={0.06} />
 
-            <Reveal delay={0.06} immediate>
-              <h1 className="mt-6 text-4xl font-semibold leading-[1.05] tracking-tight text-slate-900 sm:text-5xl lg:text-6xl">
-                Plot boundary in.
-                <br />
-                <span className="text-blue-600">Compliant scheme out.</span>
-              </h1>
-            </Reveal>
-
-            <Reveal delay={0.12} immediate>
-              <p className="mt-6 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-                Draw the plot, set the brief, and Aptimizer returns a buildable development scheme.
-                Envelope, tower placement, unit mix, compliance checks, BOQ and cost estimate all
-                come from one project model.
-              </p>
-            </Reveal>
-
-            <Reveal delay={0.18} immediate>
-              <div className="mt-9 flex flex-wrap items-center gap-3">
-                <ReactiveButton
-                  as={Link}
-                  to={workspaceHref}
-                  size="lg"
-                  icon={<ArrowRight className="h-4 w-4" />}
-                  data-testid={LANDING.heroPrimaryCta}
-                >
-                  {workspaceLabel}
-                </ReactiveButton>
-                <ReactiveButton
-                  as="a"
-                  href="#pipeline"
-                  variant="outline"
-                  size="lg"
-                  data-testid={LANDING.heroSecondaryCta}
-                >
-                  See how it works
-                </ReactiveButton>
-              </div>
-            </Reveal>
-
-            <Reveal delay={0.24} immediate>
-              <p className="mt-8 max-w-md text-sm leading-relaxed text-slate-500">
-                Built for Indian byelaws. FAR, setbacks, ground coverage and parking norms are
-                configuration per municipal body, never hardcoded constants.
-              </p>
-            </Reveal>
-          </div>
-
-          {/* Hero drawing, drifting on scroll */}
-          <motion.div style={{ y: plotY }} className="relative">
-            <div className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-3">
-                <span className="font-mono text-xs uppercase tracking-wider text-slate-500">
-                  Site plan / stage 3
-                </span>
-                <span className="rounded-sm bg-emerald-50 px-2 py-0.5 font-mono text-xs text-emerald-700">
-                  Contained
-                </span>
-              </div>
-              <BlueprintPlot className="h-auto w-full" />
-            </div>
+          {/* Scroll cue — clears as soon as the visitor starts scrubbing. */}
+          <motion.div
+            aria-hidden="true"
+            style={{ opacity: cueFade }}
+            className="absolute inset-x-0 bottom-8 z-10 flex justify-center"
+            animate={reduced ? undefined : { y: [0, 6, 0] }}
+            transition={reduced ? undefined : { duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+          >
+            <ChevronDown className="h-5 w-5 text-slate-500" />
           </motion.div>
+        </div>
+      </section>
+
+      {/* The pitch, on its own ground once the sequence has finished. */}
+      <section
+        className="relative bg-slate-950 py-24 sm:py-32"
+        data-testid={LANDING.heroCopy}
+      >
+        <div className="relative z-10 mx-auto flex max-w-4xl flex-col items-center px-6 text-center">
+<Reveal immediate>
+            <motion.div
+              animate={reduced ? undefined : { y: [0, -8, 0] }}
+              transition={reduced ? undefined : { duration: 6, repeat: Infinity, ease: "easeInOut" }}
+            >
+              <BrandMark
+                light
+                className="h-20 w-auto drop-shadow-[0_4px_28px_rgba(0,0,0,0.5)] sm:h-24"
+              />
+            </motion.div>
+          </Reveal>
+
+          <Reveal delay={0.1} immediate>
+            <div className="mt-8 flex items-center gap-3 text-blue-300">
+              <span className="h-px w-8 bg-blue-400/70" />
+              <span className="font-mono text-xs uppercase tracking-[0.18em]">
+                Civil engineering platform
+              </span>
+              <span className="h-px w-8 bg-blue-400/70" />
+            </div>
+          </Reveal>
+
+          <Reveal delay={0.16} immediate>
+            <h1 className="mt-6 text-4xl font-semibold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">
+              Plot boundary in.
+              <br />
+              <span className="text-blue-400">Compliant scheme out.</span>
+            </h1>
+          </Reveal>
+
+          <Reveal delay={0.22} immediate>
+            <p className="mt-6 max-w-xl text-base leading-relaxed text-slate-300 sm:text-lg">
+              Draw the plot, set the brief, and Aptimizer returns a buildable development scheme.
+              Envelope, tower placement, unit mix, compliance checks, BOQ and cost estimate all
+              come from one project model.
+            </p>
+          </Reveal>
+
+          <Reveal delay={0.28} immediate>
+            <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
+              <ReactiveButton
+                as={Link}
+                to={workspaceHref}
+                size="lg"
+                icon={<ArrowRight className="h-4 w-4" />}
+                data-testid={LANDING.heroPrimaryCta}
+              >
+                {workspaceLabel}
+              </ReactiveButton>
+              <ReactiveButton
+                as="a"
+                href="#pipeline"
+                variant="outline"
+                size="lg"
+                className="border-white/30 bg-white/5 text-white backdrop-blur-sm hover:border-white/50 hover:bg-white/10"
+                data-testid={LANDING.heroSecondaryCta}
+              >
+                See how it works
+              </ReactiveButton>
+            </div>
+          </Reveal>
+
+          <Reveal delay={0.34} immediate>
+            <p className="mt-8 max-w-md text-sm leading-relaxed text-slate-400">
+              Built for Indian byelaws. FAR, setbacks, ground coverage and parking norms are
+              configuration per municipal body, never hardcoded constants.
+            </p>
+          </Reveal>
         </div>
       </section>
 
@@ -490,9 +531,7 @@ export default function Landing() {
       <footer className="border-t border-slate-200 bg-white py-10" data-testid={LANDING.footer}>
         <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-4 px-6 sm:flex-row sm:items-center">
           <div className="flex items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-sm bg-slate-900">
-              <Ruler className="h-3.5 w-3.5 text-white" />
-            </span>
+            <BrandMark className="h-7 w-auto" />
             <span className="text-sm font-semibold tracking-tight text-slate-900">Aptimizer</span>
           </div>
           <p className="font-mono text-xs text-slate-500">
@@ -500,6 +539,8 @@ export default function Landing() {
           </p>
         </div>
       </footer>
+
+      <QuickNavDock workspaceHref={workspaceHref} workspaceLabel={workspaceLabel} />
     </div>
   );
 }

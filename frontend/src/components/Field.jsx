@@ -1,7 +1,7 @@
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 
-export const NumField = ({ label, value, onChange, suffix, step = 1, testid, disabled }) => (
+export const NumField = ({ label, value, onChange, suffix, step = 1, testid, disabled, hint }) => (
   <div className="space-y-1">
     <Label className="text-[11px] uppercase tracking-wide text-slate-500">{label}</Label>
     <div className="relative">
@@ -20,6 +20,7 @@ export const NumField = ({ label, value, onChange, suffix, step = 1, testid, dis
         </span>
       )}
     </div>
+    {hint && <p className="text-[10px] leading-snug text-slate-500">{hint}</p>}
   </div>
 );
 

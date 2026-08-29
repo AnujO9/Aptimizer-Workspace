@@ -332,6 +332,52 @@ def place_amenities(region: BaseGeometry, roads: BaseGeometry, plot_area: float,
     return placed, region, warnings
 
 
+# ---------------------------------------------------------------- 4. community green
+def reserve_green(region: BaseGeometry, plot_area: float,
+                  cfg: SiteLayoutConfig) -> Tuple[BaseGeometry, BaseGeometry, List[str]]:
+    """Carve a central landscaped green out of the packable land.
+
+    Taken from the deepest part of the largest region — the point furthest from any road,
+    which is both the least useful land for a road-served building and where a shared
+    green actually belongs. Reserved before packing so it cannot be quietly built over.
+    """
+    warnings: List[str] = []
+    o = cfg.open_space
+    if not o.enabled or o.green_pct_of_plot <= 0 or region.is_empty:
+        return EMPTY, region, warnings
+
+    target = plot_area * o.green_pct_of_plot / 100.0
+    if target < o.min_area:
+        return EMPTY, region, warnings
+
+    parts = polygons_of(region)
+    if not parts:
+        return EMPTY, region, warnings
+    host = parts[0]
+
+    # Grow a disc at the region's pole of inaccessibility until it reaches the target
+    # area, clipped to the region so the green never escapes the packable land.
+    centre = host.representative_point()
+    try:
+        from shapely import centroid as _c  # noqa: F401
+        centre = host.buffer(-min(host.bounds[2] - host.bounds[0],
+                                  host.bounds[3] - host.bounds[1]) / 4.0).representative_point()
+    except Exception:
+        pass
+    if not host.contains(centre):
+        centre = host.representative_point()
+
+    radius = math.sqrt(target / math.pi)
+    green = _clean(centre.buffer(radius, quad_segs=cfg.buffer_quad_segs).intersection(host), cfg)
+    if green.is_empty or green.area < o.min_area:
+        return EMPTY, region, warnings
+
+    remaining = _clean(region.difference(green.buffer(o.clearance)), cfg)
+    warnings.append(f"Reserved a {green.area:.0f} m2 community green "
+                    f"({green.area / plot_area * 100:.1f}% of the plot).")
+    return green, remaining, warnings
+
+
 # ---------------------------------------------------------------- orchestrator
 @dataclass
 class ReserveResult:
@@ -340,6 +386,7 @@ class ReserveResult:
     driveways: BaseGeometry
     amenities: List[AmenityPlacement]
     residual: BaseGeometry
+    green: BaseGeometry = EMPTY
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -380,6 +427,12 @@ class ReserveResult:
                 }
                 for a in self.amenities
             ],
+            "green": {
+                "area_sqm": round(_area(self.green), 2),
+                "pct_of_plot": round(_area(self.green) / plot_area * 100, 2) if plot_area else 0.0,
+                "polygons": geom_to_latlng(self.green, frame),
+                "polygons_local": geom_to_local(self.green),
+            },
             "residual": {
                 "area_sqm": round(residual_area, 2),
                 "pct_of_envelope": round(residual_area / env_area * 100, 2) if env_area else 0.0,
@@ -419,13 +472,18 @@ def reserve(env: EnvelopeResult, cfg: Optional[SiteLayoutConfig] = None) -> Rese
     amenities, residual, w = place_amenities(residual, roads, env.plot.area, cfg)
     warnings += w
 
+    green, residual, w = reserve_green(residual, env.plot.area, cfg)
+    warnings += w
+
     result = ReserveResult(envelope=env, ring=ring, driveways=drives,
-                           amenities=amenities, residual=residual, warnings=warnings)
+                           amenities=amenities, residual=residual, green=green,
+                           warnings=warnings)
 
     # Stage 1's containment guarantee must survive stage 2: everything reserved, and the
     # residual handed to packing, still lives inside the envelope.
     guard = env.envelope.buffer(1e-6)
-    for name, geom in (("ring", ring), ("driveways", drives), ("residual", residual)):
+    for name, geom in (("ring", ring), ("driveways", drives), ("residual", residual),
+                       ("green", green)):
         if not geom.is_empty and not guard.contains(geom):
             raise LayoutError("containment_failed",
                               f"Internal error: reserved {name} geometry escapes the buildable envelope.")

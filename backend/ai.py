@@ -1,0 +1,383 @@
+"""Single place where Aptimizer talks to an LLM.
+
+Every AI feature in the app routes through `generate_markdown` so that provider choice,
+model selection, error handling and the "no key configured" path are defined once rather
+than copy-pasted into each endpoint.
+
+Provider resolution, in order:
+  1. GEMINI_API_KEY  -- your own Google AI Studio key, billed to your own account.
+  2. EMERGENT_LLM_KEY -- the Emergent-managed proxy, kept as a fallback so an
+     emergent.host deployment that only has that key keeps working unchanged.
+
+Neither set => AIUnavailable, which the API layer turns into a 503 with a message that
+names the env var to set, instead of a stack trace.
+"""
+import asyncio
+import json
+import logging
+import os
+import random
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+
+# Google returns 503 UNAVAILABLE ("model is experiencing high demand") for a newly released
+# model far more often than for an established one -- it is a queueing signal, not a fault
+# in the request, and the same prompt usually succeeds seconds later. So a failure is
+# retried with backoff, and only if the model stays unavailable do we step down to an older
+# one. Order matters: the fallbacks are progressively more established, not more capable.
+GEMINI_FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+
+# xAI speaks the OpenAI wire format, so Grok needs no new dependency -- the `openai`
+# package already pinned in requirements.txt talks to it by pointing base_url at xAI.
+XAI_BASE_URL = "https://api.x.ai/v1"
+DEFAULT_GROK_MODEL = "grok-4.6"
+GROK_FALLBACK_MODELS = []     # set GROK_FALLBACK_MODELS in .env once you have a second tier
+
+# Groq (groq.com) is a different company from xAI's Grok and is also OpenAI-compatible,
+# so it shares the same client path. The names are one letter apart and the keys are not
+# interchangeable, which is what KEY_PREFIXES below exists to catch.
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_FALLBACK_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-20b"]
+
+# Every provider issues keys with a recognisable prefix. Checking it turns "the AI button
+# returns 401" into a message that names the actual mistake.
+KEY_PREFIXES = {"groq": "gsk_", "grok": "xai-", "gemini": "AIza"}
+
+RETRY_ATTEMPTS = 3            # per model, before stepping down to the next one
+RETRY_BASE_DELAY = 1.5        # seconds; doubles each attempt, plus jitter
+
+# Status codes worth retrying: the service is busy or briefly broken, the request is fine.
+# A 400/401/403/404 means the request or key is wrong and retrying only wastes time.
+TRANSIENT_CODES = (429, 500, 502, 503, 504)
+# Wording differs by vendor -- Google says "high demand", xAI and OpenAI say "rate limit"
+# or "Too Many Requests" -- so the list has to cover both or a retryable failure on one
+# provider gets treated as permanent and fails on the first attempt.
+TRANSIENT_MARKERS = ("unavailable", "overloaded", "overload", "high demand", "capacity",
+                     "resource_exhausted", "rate limit", "rate_limit", "too many requests",
+                     "deadline", "timeout", "timed out", "try again", "internal error",
+                     "server error", "bad gateway", "temporarily", "busy", "connection")
+# Exception class names are a more reliable signal than prose for SDKs that wrap errors.
+TRANSIENT_TYPES = ("ratelimit", "timeout", "apiconnection", "internalserver",
+                   "serviceunavailable", "servererror", "overloaded")
+
+# Context payloads are machine-generated from project documents, so an unusually large
+# project could otherwise push a very large prompt (and bill) to the provider. Analyses
+# here are summaries of already-computed numbers; past this size the extra detail does not
+# change the narrative, so it is cheaper to cap than to send everything.
+MAX_CONTEXT_CHARS = 60_000
+
+
+class AIUnavailable(RuntimeError):
+    """No provider is configured. Maps to HTTP 503."""
+
+
+class AIFailed(RuntimeError):
+    """A provider was configured but the call failed. Maps to HTTP 502."""
+
+
+def _fallback_models(name: str = "gemini") -> list:
+    """Models to step down to, overridable with a comma-separated <PROVIDER>_FALLBACK_MODELS."""
+    env = {"grok": "GROK_FALLBACK_MODELS",
+           "groq": "GROQ_FALLBACK_MODELS"}.get(name, "GEMINI_FALLBACK_MODELS")
+    raw = (os.environ.get(env) or "").strip()
+    if raw:
+        return [m.strip() for m in raw.split(",") if m.strip()]
+    if name == "grok":
+        return list(GROK_FALLBACK_MODELS)
+    if name == "groq":
+        return list(GROQ_FALLBACK_MODELS)
+    return list(GEMINI_FALLBACK_MODELS)
+
+
+PROVIDER_KEYS = {
+    "grok": ("XAI_API_KEY", "GROK_MODEL", DEFAULT_GROK_MODEL,
+             "https://console.x.ai/team/default/api-keys"),
+    "groq": ("GROQ_API_KEY", "GROQ_MODEL", DEFAULT_GROQ_MODEL,
+             "https://console.groq.com/keys"),
+    "gemini": ("GEMINI_API_KEY", "GEMINI_MODEL", DEFAULT_GEMINI_MODEL,
+               "https://aistudio.google.com/apikey"),
+    "emergent": ("EMERGENT_LLM_KEY", "", "claude-sonnet-4-6", ""),
+}
+# Order used when AI_PROVIDER is not set: the first one with a key wins.
+AUTO_ORDER = ("groq", "grok", "gemini", "emergent")
+
+
+def _key_for(name: str) -> str:
+    env = PROVIDER_KEYS.get(name, ("",))[0]
+    return (os.environ.get(env) or "").strip() if env else ""
+
+
+def _describe(name: str) -> dict:
+    env, model_env, default_model, _ = PROVIDER_KEYS[name]
+    model = ((os.environ.get(model_env) or "").strip() if model_env else "") or default_model
+    out = {"configured": True, "provider": name, "model": model, "key_env": env}
+    expected = KEY_PREFIXES.get(name)
+    key = _key_for(name)
+    if expected and key and not key.startswith(expected):
+        wrong = next((o for o, pre in KEY_PREFIXES.items()
+                      if o != name and key.startswith(pre)), None)
+        out["warning"] = (
+            f"{env} does not start with '{expected}', which is the prefix {name} keys use."
+            + (f" It looks like a {wrong} key -- {name} and {wrong} are different providers."
+               if wrong else " Check you pasted the right key."))
+    return out
+
+
+def provider() -> dict:
+    """Which provider would be used, without calling it. Also drives the /ai/status route.
+
+    AI_PROVIDER pins the choice explicitly, which is how you switch vendors: set it to
+    grok, gemini or emergent. Leaving it unset auto-selects the first provider in
+    AUTO_ORDER that actually has a key, so an existing deployment keeps working untouched.
+    """
+    pinned = (os.environ.get("AI_PROVIDER") or "").strip().lower()
+    if pinned:
+        if pinned not in PROVIDER_KEYS:
+            return {"configured": False, "provider": None, "model": None,
+                    "detail": f"AI_PROVIDER is set to '{pinned}', which is not a known "
+                              f"provider. Use one of: {', '.join(PROVIDER_KEYS)}."}
+        if not _key_for(pinned):
+            env, _, _, console = PROVIDER_KEYS[pinned]
+            return {"configured": False, "provider": None, "model": None,
+                    "detail": f"AI_PROVIDER is set to '{pinned}' but {env} is empty in "
+                              f"backend/.env." + (f" Create a key at {console}." if console else "")}
+        return _describe(pinned)
+
+    for name in AUTO_ORDER:
+        if _key_for(name):
+            return _describe(name)
+    return {"configured": False, "provider": None, "model": None,
+            "detail": "No AI key is configured. Set GROQ_API_KEY (console.groq.com/keys), "
+                      "XAI_API_KEY (console.x.ai) or GEMINI_API_KEY "
+                      "(aistudio.google.com/apikey) in backend/.env, then restart."}
+
+
+def context_block(context: dict) -> str:
+    """Serialise a context dict into a fenced JSON block, capped at MAX_CONTEXT_CHARS."""
+    text = json.dumps(context, indent=1, default=str)
+    if len(text) > MAX_CONTEXT_CHARS:
+        text = text[:MAX_CONTEXT_CHARS] + "\n... [truncated: project too large to send in full]"
+    return "```json\n" + text + "\n```"
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True when the provider was busy rather than the request being wrong.
+
+    Checked in order of reliability: the numeric status the SDK attached, then the
+    exception class name, then the message text. A permanent failure (401 bad key, 404
+    unknown model, 400 malformed request) must fall through to False so it surfaces on the
+    first attempt instead of after nine.
+    """
+    code = getattr(exc, "status_code", None)
+    if not isinstance(code, int):
+        code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code in TRANSIENT_CODES          # authoritative -- trust it either way
+    name = type(exc).__name__.lower()
+    if any(t in name for t in TRANSIENT_TYPES):
+        return True
+    blob = str(exc).lower()
+    if any(f"{c}" in blob for c in TRANSIENT_CODES):
+        return True
+    return any(m in blob for m in TRANSIENT_MARKERS)
+
+
+async def _with_retries(models: list, call, label: str) -> dict:
+    """Run `call(model)` down a model chain, retrying transient failures with backoff.
+
+    Provider-agnostic on purpose. The retry and step-down behaviour is the part that was
+    tested carefully after Google started returning 503s on a freshly released model, so it
+    lives in one place rather than being reimplemented per vendor.
+
+    `call(model)` returns the response text. Returns on the first non-empty answer; raises
+    AIFailed once every model is exhausted, or immediately on a non-transient error (a bad
+    key, an unknown model, a blocked prompt) where retrying would change nothing.
+    """
+    last = None
+    for model in models:
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                text = await call(model)
+            except Exception as exc:
+                last = exc
+                if not _is_transient(exc):
+                    logger.warning("%s %s failed permanently: %s", label, model, exc)
+                    raise AIFailed(str(exc)) from exc
+                if attempt < RETRY_ATTEMPTS - 1:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.info("%s %s busy (attempt %d/%d), retrying in %.1fs",
+                                label, model, attempt + 1, RETRY_ATTEMPTS, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                logger.info("%s %s still busy after %d attempts, trying next model",
+                            label, model, RETRY_ATTEMPTS)
+                break
+
+            text = (text or "").strip()
+            if text:
+                if model != models[0]:
+                    logger.info("%s served by fallback model %s", label, model)
+                return {"text": text, "model": model, "provider": label}
+
+            # A reasoning model that spends its whole budget thinking returns no text rather
+            # than raising, so an empty body has to be caught or it is stored as a blank
+            # analysis and looks like a silent success.
+            last = RuntimeError("empty response")
+            logger.info("%s %s returned an empty response, trying next model", label, model)
+            break
+
+    raise AIFailed(
+        f"Every configured model was unavailable after {RETRY_ATTEMPTS} attempts each "
+        f"({', '.join(models)}). The provider reported: {last}. This is usually temporary "
+        "-- wait a minute and try again, or set the model in backend/.env to one with more "
+        "capacity."
+    )
+
+
+async def _gemini_generate(key: str, models: list, system: str, prompt: str) -> dict:
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=key)
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0.3)
+
+    async def call(model):
+        r = await client.aio.models.generate_content(model=model, contents=prompt, config=config)
+        return getattr(r, "text", None)
+
+    return await _with_retries(models, call, "gemini")
+
+
+async def _openai_compatible_generate(key: str, base_url: str, models: list,
+                                      system: str, prompt: str, label: str) -> dict:
+    """Any endpoint speaking the OpenAI chat-completions format -- xAI's Grok included."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=key, base_url=base_url)
+
+    async def call(model):
+        r = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        return r.choices[0].message.content if r.choices else None
+
+    return await _with_retries(models, call, label)
+
+
+async def generate_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer") -> dict:
+    """Run one prompt and return {"text", "model", "provider"}.
+
+    `system` sets the role and output shape; `prompt` carries the data. Raises
+    AIUnavailable when nothing is configured and AIFailed when the provider errors.
+    """
+    p = provider()
+    if not p["configured"]:
+        raise AIUnavailable(p["detail"])
+
+    name = p["provider"]
+    chain = [p["model"]] + [m for m in _fallback_models(name) if m != p["model"]]
+
+    if name in ("grok", "groq"):
+        try:
+            import openai  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - dependency is in requirements.txt
+            raise AIFailed("The openai package is not installed. Run: pip install openai") from exc
+        env, base = (("XAI_API_KEY", XAI_BASE_URL) if name == "grok"
+                     else ("GROQ_API_KEY", GROQ_BASE_URL))
+        return await _openai_compatible_generate(
+            os.environ[env].strip(), base, chain, system, prompt, name)
+
+    if name == "gemini":
+        try:
+            import google.genai  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - dependency is in requirements.txt
+            raise AIFailed("google-genai is not installed. Run: pip install google-genai") from exc
+        return await _gemini_generate(os.environ["GEMINI_API_KEY"].strip(), chain, system, prompt)
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"].strip(),
+                       session_id=session_hint,
+                       system_message=system).with_model("anthropic", "claude-sonnet-4-6")
+        text = await chat.send_message(UserMessage(text=prompt))
+    except Exception as exc:
+        logger.exception("Emergent LLM call failed")
+        raise AIFailed(str(exc)) from exc
+    return {"text": (text or "").strip(), "model": "claude-sonnet-4-6", "provider": "emergent"}
+
+
+# ---------------------------------------------------------------- system prompts
+# Shared preamble: these analyses are read by engineers and by clients, and every number
+# in them comes from the app's own calculations. Inventing a figure would be worse than
+# omitting it, so that rule leads.
+_BASE = (
+    "You are a senior Indian civil engineer and real estate development consultant. "
+    "You are given JSON computed by an engineering application. Quote only numbers that "
+    "appear in that JSON -- never invent, estimate or round-trip a figure that is not "
+    "there, and if something needed is missing say so plainly. All money is in Indian "
+    "Rupees (INR); write amounts as INR with Indian digit grouping (for example "
+    "INR 1,25,00,000). Reference Indian codes (NBC 2016, the relevant IS codes) where "
+    "they apply. Write in markdown. Be concise and technical -- no filler, no preamble, "
+    "no restating the question."
+)
+
+PROMPTS = {
+    "gis": _BASE + (
+        " Write a site analysis with these sections: **Verdict** (2 sentences), "
+        "**Strengths** (bullets), **Weaknesses & Risks** (bullets), and "
+        "**Design & Engineering Recommendations** (bullets referencing slope, drainage, "
+        "orientation, access and ventilation). Under 400 words."
+    ),
+    "compliance": _BASE + (
+        " The JSON lists compliance rules checked against this design, each with its "
+        "threshold and actual value. Write: **Verdict** (1-2 sentences on overall "
+        "standing), then **Failures** -- for EACH failed rule, a bullet naming the rule, "
+        "the gap in plain language, why the rule exists, and the most practical design "
+        "change that would close it (be specific: which parameter to change and roughly "
+        "by how much). Then **Watch List** for any rule passing by a thin margin. If "
+        "nothing fails, say so and give the Watch List only. Under 450 words."
+    ),
+    "report": _BASE + (
+        " Write an executive summary of this project for the client's decision-makers, "
+        "who are not engineers. Sections: **Project at a Glance** (2-3 sentences covering "
+        "scale, units and cost), **Key Numbers** (a short markdown table of the figures "
+        "that matter most), **Feasibility & Compliance** (bullets), and **What Needs a "
+        "Decision** (bullets -- the open risks or trade-offs the client should weigh). "
+        "Plain language over jargon. Under 450 words."
+    ),
+    "cost": _BASE + (
+        " Review this cost and quantity estimate. Sections: **Summary** (2 sentences on "
+        "total cost and cost per unit / per m2, with a note on whether the per-m2 figure "
+        "sits in a normal range for Indian residential construction), **Cost Drivers** "
+        "(bullets -- what dominates the estimate and why), **Rates to Re-check** (bullets "
+        "-- any unit rate or ratio that looks unusually high or low, saying which and in "
+        "which direction; if all look reasonable, say that), and **Savings Opportunities** "
+        "(bullets, each with the rough scale of the saving). Under 450 words."
+    ),
+    "engineering": _BASE + (
+        " Explain these IS-code and NBC engineering results to a junior engineer. "
+        "Sections: **What the Numbers Mean** (bullets translating base shear, column "
+        "sizing, foundation recommendation and mix design into plain engineering "
+        "language), **What Governs This Design** (bullets -- which code provision or load "
+        "case is actually driving each result), and **Checks Before Detailing** (bullets "
+        "-- what a designer must verify by hand before this goes forward, and any missing "
+        "input that weakens the calculation). Cite IS/NBC clauses that appear in the "
+        "JSON. Under 500 words."
+    ),
+    "compare": _BASE + (
+        " Two design schemes for the same project are given. Write: **Headline** (1-2 "
+        "sentences naming which scheme is stronger overall and on what grounds), "
+        "**Where They Differ** (bullets -- only metrics that actually differ, each with "
+        "the direction and size of the change and what it means in practice), "
+        "**Trade-offs** (bullets -- what each scheme gives up to gain what), and "
+        "**Recommendation** (2-3 sentences, and state plainly if the choice depends on a "
+        "priority only the client can set). Ignore metrics that are identical. Under 450 "
+        "words."
+    ),
+}

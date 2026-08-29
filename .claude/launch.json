@@ -3,11 +3,12 @@
   "configurations": [
     {
       "name": "backend",
-      "runtimeExecutable": "A:/Workspace/backend/venv/Scripts/python.exe",
+      "runtimeExecutable": "D:/Workspace/backend/venv/Scripts/python.exe",
       "runtimeArgs": [
         "-m", "uvicorn", "server:app",
-        "--app-dir", "A:/Workspace/backend",
+        "--app-dir", "D:/Workspace/backend",
         "--reload",
+        "--reload-dir", "D:/Workspace/backend",
         "--host", "127.0.0.1",
         "--port", "8000"
       ],
@@ -16,7 +17,7 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "A:/Workspace/frontend", "start"],
+      "runtimeArgs": ["--prefix", "D:/Workspace/frontend", "start"],
       "port": 3000
     }
   ]

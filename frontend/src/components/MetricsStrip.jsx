@@ -1,7 +1,14 @@
-import { int, money, num } from "@/lib/format";
+import { int, money, num } from "../lib/format";
 
-const Item = ({ label, value, unit, testid, tone }) => (
-  <div className="px-4 py-2 border-r border-slate-200 last:border-r-0 min-w-[124px]" data-testid={testid}>
+const Item = ({ label, value, unit, testid, tone, vertical }) => (
+  <div
+    className={
+      vertical
+        ? "px-4 py-2.5 border-b border-slate-200 last:border-b-0"
+        : "px-4 py-2 border-r border-slate-200 last:border-r-0 min-w-[124px]"
+    }
+    data-testid={testid}
+  >
     <div className="text-[10px] uppercase tracking-wider text-slate-500 whitespace-nowrap">{label}</div>
     <div
       className={`font-mono text-base leading-tight transition-colors ${
@@ -14,27 +21,49 @@ const Item = ({ label, value, unit, testid, tone }) => (
   </div>
 );
 
-export const MetricsStrip = ({ analysis }) => {
-  if (!analysis) return <div className="h-14 border-b border-slate-200 bg-white" />;
+/**
+ * @param {boolean} vertical  stack top-to-bottom for a sidebar instead of side-by-side
+ *                            for a strip. Same figures either way -- only the layout
+ *                            direction and each item's dividing border change.
+ */
+export const MetricsStrip = ({ analysis, duration, vertical = false }) => {
+  if (!analysis)
+    return vertical ? (
+      <div className="w-full bg-white" />
+    ) : (
+      <div className="h-14 border-b border-slate-200 bg-white" />
+    );
   const a = analysis.areas;
   const c = analysis.compliance;
   return (
     <div
-      className="flex overflow-x-auto border-b border-slate-200 bg-white sticky top-0 z-20"
+      className={
+        vertical
+          ? "flex flex-col overflow-y-auto bg-white"
+          : "flex overflow-x-auto border-b border-slate-200 bg-white sticky top-0 z-20"
+      }
       data-testid="metrics-strip"
     >
-      <Item label="Plot Area" value={num(a.plot_area_sqm, 0)} unit="m²" testid="metric-plot-area" />
-      <Item label="Carpet" value={num(a.carpet_area_sqm, 0)} unit="m²" testid="metric-carpet" />
-      <Item label="Built-up" value={num(a.builtup_area_sqm, 0)} unit="m²" testid="metric-builtup" />
-      <Item label="Super B-up" value={num(a.super_builtup_area_sqm, 0)} unit="m²" testid="metric-super-builtup" />
-      <Item label="Gr. Coverage" value={num(a.ground_coverage_pct, 1)} unit="%" testid="metric-coverage" />
-      <Item label="FAR" value={num(a.far, 2)} testid="metric-far" />
-      <Item label="FSI" value={num(a.fsi, 2)} testid="metric-fsi" />
-      <Item label="Open Space" value={num(a.open_space_pct, 1)} unit="%" testid="metric-open-space" />
-      <Item label="Units" value={int(a.total_units)} testid="metric-units" />
-      <Item label="Density" value={num(a.density_units_per_acre, 1)} unit="/acre" testid="metric-density" />
-      <Item label="Cost" value={money(analysis.cost.total, analysis.cost.currency)} testid="metric-cost" />
+      <Item vertical={vertical} label="Plot Area" value={num(a.plot_area_sqm, 0)} unit="m²" testid="metric-plot-area" />
+      <Item vertical={vertical} label="Carpet" value={num(a.carpet_area_sqm, 0)} unit="m²" testid="metric-carpet" />
+      <Item vertical={vertical} label="Built-up" value={num(a.builtup_area_sqm, 0)} unit="m²" testid="metric-builtup" />
+      <Item vertical={vertical} label="Super B-up" value={num(a.super_builtup_area_sqm, 0)} unit="m²" testid="metric-super-builtup" />
+      <Item vertical={vertical} label="Gr. Coverage" value={num(a.ground_coverage_pct, 1)} unit="%" testid="metric-coverage" />
+      <Item vertical={vertical} label="FAR" value={num(a.far, 2)} testid="metric-far" />
+      <Item vertical={vertical} label="FSI" value={num(a.fsi, 2)} testid="metric-fsi" />
+      <Item vertical={vertical} label="Open Space" value={num(a.open_space_pct, 1)} unit="%" testid="metric-open-space" />
+      <Item vertical={vertical} label="Units" value={int(a.total_units)} testid="metric-units" />
+      <Item vertical={vertical} label="Density" value={num(a.density_units_per_acre, 1)} unit="/acre" testid="metric-density" />
+      <Item vertical={vertical} label="Cost" value={money(analysis.cost.total, analysis.cost.currency)} testid="metric-cost" />
       <Item
+        vertical={vertical}
+        label="Build Time"
+        value={duration ? num(duration.duration_months, 1) : "—"}
+        unit={duration ? "months" : ""}
+        testid="metric-duration"
+      />
+      <Item
+        vertical={vertical}
         label="Compliance"
         value={`${c.passed}/${c.total}`}
         tone={c.overall === "pass" ? "success" : "danger"}

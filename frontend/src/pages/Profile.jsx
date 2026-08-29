@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useAuth } from "@/context/AuthContext";
-import { api, apiError } from "@/lib/api";
-import { TopBar } from "@/components/TopBar";
-import { Section, TextField } from "@/components/Field";
-import { Button } from "@/components/ui/button";
+import { useAuth } from "../context/AuthContext";
+import { api, apiError } from "../lib/api";
+import { TopBar } from "../components/TopBar";
+import { Section, TextField } from "../components/Field";
+import { Button } from "../components/ui/button";
 
 export default function Profile() {
   const { user, setUser } = useAuth();

@@ -3,18 +3,19 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, Line, OrbitControls, PointerLockControls } from "@react-three/drei";
 import * as THREE from "three";
 import { Box, Compass, Eye, Layers, Move3d, Scissors, SunMedium } from "lucide-react";
-import { Section } from "@/components/Field";
-import { FloorPlate } from "@/components/FloorPlate";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { Slider } from "@/components/ui/slider";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Section } from "../components/Field";
+import { FloorPlate } from "../components/FloorPlate";
+import { Button } from "../components/ui/button";
+import { Switch } from "../components/ui/switch";
+import { Slider } from "../components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import {
-  ROOM_COLORS, UNIT_COLORS, engineSiteShapes, engineTowerLayout, featureShapes, localBounds,
-  originOf, polyToLocal, sunAtHour, sunVector, terrainHeights, towerLayout,
-} from "@/lib/scene";
-import { money, num } from "@/lib/format";
-import { api, apiError } from "@/lib/api";
+  ROOM_COLORS, UNIT_COLORS, engineSiteShapes, engineTowerLayout, featureShapes, isLayoutCurrent,
+  localBounds, originOf, polyToLocal, polygonSignature, sunAtHour, sunVector, terrainHeights,
+  constrainedTowerLayout,
+} from "../lib/scene";
+import { money, num } from "../lib/format";
+import { api, apiError } from "../lib/api";
 
 const TOWER_RULE_PARAMS = {
   min_stair_width: (tm) => tm.stair_min_width,
@@ -436,7 +437,15 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
   const coords = useMemo(() => project.plot?.coordinates || [], [project.plot?.coordinates]);
   const gis = project.gis;
 
-  const siteLayout = project.site_layout;
+  // A layout generated for a different boundary, or by an older engine, is not a
+  // description of this site — treat it as absent so it is regenerated rather than
+  // drawn against a plot it was never packed into.
+  const storedLayout = project.site_layout;
+  const siteLayout = useMemo(
+    () => (isLayoutCurrent(storedLayout, project.plot?.coordinates || []) ? storedLayout : null),
+    [storedLayout, project.plot?.coordinates]
+  );
+  const layoutStale = !!storedLayout && !siteLayout;
 
   const scene = useMemo(() => {
     if (coords.length < 3) return null;
@@ -444,13 +453,19 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
     const pts = polyToLocal(coords, origin);
     const bounds = localBounds(pts);
     // Prefer the site layout engine, whose footprints are guaranteed inside the setback
-    // envelope. towerLayout is the bounding-box fallback and can place towers outside a
-    // non-rectangular boundary — it applies only until a layout has been generated.
+    // envelope. constrainedTowerLayout is the interim placement used until that layout
+    // exists; it verifies containment itself, so neither path can draw outside the plot.
     const engine = engineTowerLayout(siteLayout, project.towers || []);
+    // `engine` is null only when no layout exists. An empty array means the engine ran and
+    // concluded nothing fits -- that answer is kept, rather than being overridden by a
+    // fallback that would draw towers the site cannot hold.
+    const fallback = engine ? null : constrainedTowerLayout(project.towers || [], pts, bounds);
     return {
       origin, pts, bounds,
-      towers: engine || towerLayout(project.towers || [], bounds),
+      towers: engine || fallback,
       fromEngine: !!engine,
+      engineEmpty: Array.isArray(engine) && engine.length === 0,
+      droppedFromFallback: fallback?.dropped || [],
       site: engine ? engineSiteShapes(siteLayout) : null,
       terrain: terrainHeights(gis, origin, bounds),
       buildings: featureShapes(gis, origin, "buildings"),
@@ -488,15 +503,22 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
       .then(({ data }) => {
         if (cancelled) return;
         if (data.ok) {
-          update((p) => { p.site_layout = data; });
+          const stamped = { ...data, _client_signature: polygonSignature(coords) };
+          update((p) => { p.site_layout = stamped; });
           setAutoRun("");
         } else {
+          // Let a later render try again: latching the ref on failure would strand the
+          // view on the fallback for the rest of the session.
+          autoRanRef.current = false;
           setAutoRun(data.error?.message || "failed");
         }
       })
-      .catch((e) => { if (!cancelled) setAutoRun(apiError(e.response?.data?.detail)); });
+      .catch((e) => {
+        if (cancelled) return;
+        autoRanRef.current = false;
+        setAutoRun(apiError(e.response?.data?.detail));
+      });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteLayout, coords.length, readOnly]);
 
   if (!scene)
@@ -528,6 +550,19 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
 
   return (
     <div className="space-y-4">
+      {scene.engineEmpty && (
+        <p
+          className="text-[11px] text-red-800 bg-red-50 border border-red-200 rounded-sm px-2 py-1"
+          data-testid="three-engine-empty"
+        >
+          The site layout engine could not fit a single tower inside the setback envelope,
+          so none are drawn. This is the engine's answer, not a missing result — reduce the
+          setbacks or the minimum footprint in{" "}
+          <span className="font-semibold">Setbacks &amp; Controls</span>, or enlarge the plot
+          boundary.
+        </p>
+      )}
+
       {!scene.fromEngine && (
         <p
           className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1"
@@ -536,15 +571,33 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
           {autoRun === "running" ? (
             <>Generating a site layout — towers, roads and amenity blocks will appear in a moment…</>
           ) : autoRun ? (
-            <>Could not generate a site layout ({autoRun}). Towers below use the legacy
-              bounding-box fallback, which ignores the plot shape and can place them outside
-              the boundary. Adjust the setbacks in <span className="font-semibold">Plot &amp; Site</span> and retry.</>
+            <>Could not generate a site layout ({autoRun}). Towers below are placed by the
+              interim layout, which keeps every footprint inside the boundary but does not
+              apply setbacks, roads or spacing. Adjust the setbacks in{" "}
+              <span className="font-semibold">Plot &amp; Site</span> and retry.</>
           ) : (
-            <>Towers are positioned by the legacy bounding-box fallback, which ignores the plot
-              shape — on a non-rectangular boundary they can sit outside it. Run{" "}
-              <span className="font-semibold">Plot &amp; Site → 3 · Generate layout</span> to place
-              them with the site layout engine.</>
+            layoutStale ? (
+              <>The saved layout was generated for a different plot boundary (or by an older
+                version of the engine), so it is not being drawn. Towers below use the interim
+                layout until a new one is generated.</>
+            ) : (
+              <>Towers are placed by the interim layout — inside the boundary, but without
+                setbacks, access roads or inter-tower spacing. Run{" "}
+                <span className="font-semibold">Plot &amp; Site → 3 · Generate layout</span> for
+                the engine result.</>
+            )
           )}
+        </p>
+      )}
+
+      {scene.droppedFromFallback?.length > 0 && (
+        <p
+          className="text-[11px] text-red-800 bg-red-50 border border-red-200 rounded-sm px-2 py-1"
+          data-testid="three-dropped-towers"
+        >
+          Not drawn, because no position inside the boundary could hold the declared
+          footprint: <span className="font-semibold">{scene.droppedFromFallback.join(", ")}</span>.
+          Reduce the footprint area or enlarge the plot.
         </p>
       )}
       <Section
@@ -728,11 +781,14 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
                 </>
               )}
 
-              {/* Reserved circulation and amenity blocks from the site layout engine. */}
+              {/* Reserved circulation, parking, landscape and amenity blocks from the
+                  site layout engine. Drawn bottom-up so kerbs read over the carriageway. */}
               {scene.site && view !== "floorplan" && layers.site && (
                 <>
-                  <RoadLayer rings={scene.site.ring} color="#F59E0B" y={0.14} opacity={0.8} />
-                  <RoadLayer rings={scene.site.driveways} color="#FBBF24" y={0.16} opacity={0.85} />
+                  <RoadLayer rings={scene.site.green} color="#4D9A3D" y={0.1} opacity={0.9} />
+                  <RoadLayer rings={scene.site.ring} color="#6B7280" y={0.14} opacity={0.95} />
+                  <RoadLayer rings={scene.site.driveways} color="#6B7280" y={0.15} opacity={0.95} />
+                  <RoadLayer rings={scene.site.bays} color="#CBD5E1" y={0.2} opacity={1} />
                   {scene.site.amenities.map((a) => (
                     <AmenityMesh key={a.key} block={a} />
                   ))}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MapContainer, TileLayer, Polygon, Marker, Polyline, LayersControl, Tooltip, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { Button } from "@/components/ui/button";
+import { Button } from "../components/ui/button";
 import { MousePointer2, Pencil, Trash2, Undo2 } from "lucide-react";
 
 const vertexIcon = L.divIcon({

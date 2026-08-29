@@ -38,9 +38,41 @@ export const localBounds = (pts) => {
  *  rotation sign across that flip, the footprint angle and side lengths are measured
  *  straight off the engine's own polygon after conversion — self-consistent by
  *  construction, whichever way the frames happen to relate. */
+/** Engine version this build of the frontend understands. Must match backend
+ *  siteplan/version.py — a layout stamped with anything else was produced by different
+ *  geometry code and is not safe to render against the current boundary. */
+export const ENGINE_VERSION = 3;
+
+/** Digest of a plot ring, mirroring backend siteplan.version.polygon_signature. */
+export const polygonSignature = (coords = []) => {
+  if (!coords.length) return "";
+  // FNV-1a over the same rounded body the backend hashes; we only need "same or not",
+  // so a short non-cryptographic digest compared against a recomputed one is enough.
+  const body = coords.map(([a, b]) => `${Number(a).toFixed(8)},${Number(b).toFixed(8)}`).join("|");
+  let h = 0x811c9dc5;
+  for (let i = 0; i < body.length; i += 1) {
+    h ^= body.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+};
+
+/** Is a stored layout still a description of this plot, from this engine? */
+export const isLayoutCurrent = (siteLayout, coords = []) => {
+  if (!siteLayout || !siteLayout.towers) return false;
+  if (siteLayout.engine_version !== ENGINE_VERSION) return false;
+  const stampedFor = siteLayout._client_signature;
+  return !stampedFor || stampedFor === polygonSignature(coords);
+};
+
 export const engineTowerLayout = (siteLayout, projectTowers = []) => {
-  const towers = siteLayout?.towers || [];
-  if (!towers.length) return null;
+  if (!siteLayout) return null;                 // no layout at all -> caller may fall back
+  const towers = siteLayout.towers || [];
+  // A layout that packed ZERO towers is a real answer, not a missing one: the engine
+  // decided nothing fits inside the setback envelope. Returning null here made the caller
+  // fall through to the unconstrained fallback, so the app answered "nothing fits" by
+  // drawing buildings outside the plot. An empty array keeps that distinction.
+  if (!towers.length) return [];
   const byName = new Map(projectTowers.map((t) => [t.name, t]));
 
   return towers.map((t, i) => {
@@ -111,49 +143,123 @@ export const engineSiteShapes = (siteLayout) => {
     amenities,
     ring: toSceneRings(siteLayout?.roads?.ring_polygons_local),
     driveways: toSceneRings(siteLayout?.roads?.driveway_polygons_local),
+    bays: toSceneRings(siteLayout?.surface_parking?.polygons_local),
+    green: toSceneRings(siteLayout?.green?.polygons_local),
   };
 };
 
-/** LEGACY fallback — used only when no engine layout has been generated for the project.
- *  Lays towers on a grid inside the plot's axis-aligned BOUNDING BOX, so on any
- *  non-rectangular plot a footprint can fall outside the real boundary. Run the site
- *  layout engine (Plot & Site -> Generate layout) to replace this with contained towers. */
-export const towerLayout = (towers, bounds) => {
-  const n = Math.max(towers.length, 1);
-  const setback = Math.min(Math.max(bounds.width, bounds.depth) * 0.08, 9); // perimeter margin, capped ~9m
-  const usableW = Math.max(bounds.width - setback * 2, bounds.width * 0.5);
-  const usableD = Math.max(bounds.depth - setback * 2, bounds.depth * 0.5);
-  const minGap = 6; // minimum clear gap between towers for access/parking, in metres
+/* ---------------------------------------------------------------- containment
+ * The fallback layout used to grid towers into the plot's axis-aligned BOUNDING BOX,
+ * which puts a footprint outside the real boundary on any plot that is not a rectangle.
+ * These helpers make containment testable so the fallback can be constrained instead.
+ */
 
-  // Choose a grid (rows x cols) close to the plot's own aspect ratio so towers fill the
-  // plot area rather than stringing out along one axis.
-  const aspect = usableW / Math.max(usableD, 1);
-  let cols = Math.max(1, Math.round(Math.sqrt(n * aspect)));
-  cols = Math.min(cols, n);
-  let rows = Math.ceil(n / cols);
-  // If a row/col combo leaves a dangling near-empty row, prefer a squarer grid.
-  if ((rows - 1) * cols >= n) rows = Math.ceil(n / cols);
+/** Ray casting on the scene-space ring [[x, z], ...]. */
+export const pointInPolygon = ([x, z], poly) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+    const [xi, zi] = poly[i];
+    const [xj, zj] = poly[j];
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi || 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+};
 
-  const cellW = usableW / cols;
-  const cellD = usableD / rows;
+const cross = (ax, az, bx, bz) => ax * bz - az * bx;
 
-  return towers.map((t, i) => {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const area = Math.max(Number(t.footprint_area) || 400, 40);
-    const side = Math.sqrt(area);
-    const cx = bounds.minX + setback + cellW * (col + 0.5);
-    const cz = bounds.minZ + setback + cellD * (row + 0.5);
+/** Proper segment intersection, used to catch a footprint straddling a concave notch. */
+export const segmentsIntersect = (p1, p2, p3, p4) => {
+  const d1 = cross(p4[0] - p3[0], p4[1] - p3[1], p1[0] - p3[0], p1[1] - p3[1]);
+  const d2 = cross(p4[0] - p3[0], p4[1] - p3[1], p2[0] - p3[0], p2[1] - p3[1]);
+  const d3 = cross(p2[0] - p1[0], p2[1] - p1[1], p3[0] - p1[0], p3[1] - p1[1]);
+  const d4 = cross(p2[0] - p1[0], p2[1] - p1[1], p4[0] - p1[0], p4[1] - p1[1]);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+};
+
+/** Is an axis-aligned w x d footprint centred at (cx, cz) wholly inside `poly`?
+ *  Corners inside is not sufficient on a concave plot -- a rectangle can bridge a notch
+ *  with every corner in the polygon -- so the edges are tested for crossings too. */
+export const rectInsidePolygon = (cx, cz, w, d, poly) => {
+  const hw = w / 2;
+  const hd = d / 2;
+  const corners = [[cx - hw, cz - hd], [cx + hw, cz - hd], [cx + hw, cz + hd], [cx - hw, cz + hd]];
+  if (!corners.every((pt) => pointInPolygon(pt, poly))) return false;
+  for (let i = 0; i < 4; i += 1) {
+    const a = corners[i];
+    const b = corners[(i + 1) % 4];
+    for (let j = 0, k = poly.length - 1; j < poly.length; k = j, j += 1) {
+      if (segmentsIntersect(a, b, poly[k], poly[j])) return false;
+    }
+  }
+  return true;
+};
+
+const overlaps = (a, b, gap) =>
+  Math.abs(a.x - b.x) < (a.w + b.w) / 2 + gap && Math.abs(a.z - b.z) < (a.d + b.d) / 2 + gap;
+
+/** Fallback layout, used only until the site layout engine has run for this plot.
+ *
+ *  Unlike the bounding-box grid it replaces, every footprint here is verified to sit
+ *  wholly inside the plot ring before it is placed. A tower that cannot be fitted is
+ *  returned in `dropped` rather than being drawn somewhere wrong -- showing nothing is
+ *  honest, showing a building outside the site is not.
+ */
+export const constrainedTowerLayout = (towers, poly, bounds) => {
+  const gap = 6;
+  const step = Math.max(Math.min(bounds.width, bounds.depth) / 40, 2);
+  const placed = [];
+  const dropped = [];
+
+  const candidates = [];
+  for (let z = bounds.minZ + step; z <= bounds.maxZ - step; z += step) {
+    for (let x = bounds.minX + step; x <= bounds.maxX - step; x += step) {
+      if (pointInPolygon([x, z], poly)) candidates.push([x, z]);
+    }
+  }
+  // Centre-out, so towers cluster in the buildable middle instead of hugging an edge.
+  const cx0 = (bounds.minX + bounds.maxX) / 2;
+  const cz0 = (bounds.minZ + bounds.maxZ) / 2;
+  candidates.sort((a, b) => (a[0] - cx0) ** 2 + (a[1] - cz0) ** 2 - ((b[0] - cx0) ** 2 + (b[1] - cz0) ** 2));
+
+  // Biggest first: a large footprint has the fewest legal positions, so placing it last
+  // tends to leave it homeless even when a valid arrangement exists.
+  const order = towers
+    .map((t, i) => ({ t, i, area: Math.max(Number(t.footprint_area) || 400, 40) }))
+    .sort((a, b) => b.area - a.area);
+
+  order.forEach(({ t, i, area }) => {
     const floors = Math.max(Number(t.floors) || 1, 1);
     const fh = Number(t.floor_height) || 3;
-    return {
-      id: t.id, name: t.name, x: cx, z: cz,
-      w: Math.min(side, cellW - minGap), d: Math.min(side, cellD - minGap),
+    let put = null;
+    // Shrink toward the plot if the declared footprint simply will not fit anywhere.
+    for (const scale of [1, 0.85, 0.7, 0.55, 0.4]) {
+      const side = Math.sqrt(area) * scale;
+      const spot = candidates.find(
+        ([x, z]) =>
+          rectInsidePolygon(x, z, side, side, poly) &&
+          !placed.some((q) => overlaps({ x, z, w: side, d: side }, q, gap))
+      );
+      if (spot) {
+        put = { x: spot[0], z: spot[1], w: side, d: side, scale };
+        break;
+      }
+    }
+    if (!put) {
+      dropped.push(t.name || `Tower ${i + 1}`);
+      return;
+    }
+    placed.push({
+      id: t.id, name: t.name, x: put.x, z: put.z, w: put.w, d: put.d,
       floors, floorHeight: fh, height: floors * fh,
       units: t.units || [], rooms: t.rooms || [],
       commonArea: Number(t.common_area) || 0,
-    };
+      order: i, shrunkTo: put.scale < 1 ? put.scale : null,
+    });
   });
+
+  placed.sort((a, b) => a.order - b.order);
+  placed.dropped = dropped;
+  return placed;
 };
 
 export const UNIT_COLORS = {

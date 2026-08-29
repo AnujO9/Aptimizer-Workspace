@@ -1,11 +1,12 @@
 import { toast } from "sonner";
 import { Download, FileSpreadsheet } from "lucide-react";
-import { downloadFile } from "@/lib/api";
-import { Metric, Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { money, num } from "@/lib/format";
+import { downloadFile } from "../lib/api";
+import { Metric, Section } from "../components/Field";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { money, num } from "../lib/format";
+import QuantitiesModule from "./QuantitiesModule";
 
 const RateTable = ({ rows, testidPrefix, onRate, readOnly, qtyLabel, total, cur }) => (
   <Table>
@@ -69,6 +70,10 @@ export default function BoqModule({ project, analysis, update, readOnly, project
 
   return (
     <div className="space-y-4">
+      {/* Quantities is the unpriced half of this same bill, so it lives here rather than
+          as a separate destination in the sidebar. */}
+      <QuantitiesModule project={project} analysis={analysis} update={update} readOnly={readOnly} />
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Metric label="Material" value={money(b.material_total, cur)} testid="boq-material-total" />
         <Metric label="Labour" value={money(b.labour_total, cur)} testid="boq-labour-total" />

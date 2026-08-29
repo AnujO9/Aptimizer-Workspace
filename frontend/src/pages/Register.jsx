@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Ruler } from "lucide-react";
-import { useAuth } from "@/context/AuthContext";
-import { apiError } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Brand } from "../components/Brand";
+import { useAuth } from "../context/AuthContext";
+import { apiError } from "../lib/api";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 
 export default function Register() {
   const { register } = useAuth();
@@ -39,12 +39,7 @@ export default function Register() {
         className="w-full max-w-md bg-white border border-slate-200 rounded-sm p-7 space-y-4"
         data-testid="register-form"
       >
-        <div className="flex items-center gap-2">
-          <div className="h-7 w-7 grid place-items-center bg-slate-900 rounded-sm">
-            <Ruler className="h-4 w-4 text-white" />
-          </div>
-          <span className="font-semibold tracking-tight">Aptimizer</span>
-        </div>
+        <Brand markClass="h-9 w-auto" />
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Create account</h2>
           <p className="text-sm text-slate-500 mt-1">Register to start planning projects.</p>

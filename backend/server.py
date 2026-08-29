@@ -19,6 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
+import ai as ailib
 import auth as authlib
 import engine
 import engineering as englib
@@ -26,6 +27,7 @@ import gis as gislib
 import iscodes as iscodes
 import layout as layoutlib
 import reports as reportlib
+import schedule as schedlib
 import siteplan as siteplanlib
 from defaults import default_project, default_tower, floor_layout_entry
 
@@ -80,6 +82,8 @@ class ProjectIn(BaseModel):
     client: str = ""
     location: str = ""
     plot_reference: str = ""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class ProjectPatch(BaseModel):
@@ -255,7 +259,8 @@ async def list_projects(user: dict = Depends(get_current_user)):
 async def create_project(body: ProjectIn, user: dict = Depends(get_current_user)):
     if user.get("role") == "viewer":
         raise HTTPException(status_code=403, detail="Viewer role cannot create projects")
-    doc = default_project(body.name, body.client, body.location, body.plot_reference, str(user["_id"]))
+    doc = default_project(body.name, body.client, body.location, body.plot_reference, str(user["_id"]),
+                          latitude=body.latitude, longitude=body.longitude)
     doc["created_at"] = now_iso()
     doc["updated_at"] = now_iso()
     res = await db.projects.insert_one(doc)
@@ -523,6 +528,25 @@ async def site_layout_plan_live(body: SiteLayoutLiveIn,
     return siteplanlib.plan_site(body.project, body.config)
 
 
+class RecommendIn(BaseModel):
+    plot_area_sqm: float
+    road_width_m: float = 0.0
+    city: str = ""
+    state: str = ""
+    floor_height: float = 3.0
+    area_per_unit: float = 95.0
+    far_override: Optional[float] = None
+
+
+@api.post("/site-layout/recommend")
+async def site_layout_recommend(body: RecommendIn, user: dict = Depends(get_current_user)):
+    """Recommend setbacks, height, floors and unit yield from the plot and its frontage."""
+    return siteplanlib.recommend_controls(
+        plot_area=body.plot_area_sqm, road_width=body.road_width_m,
+        city=body.city, state=body.state, floor_height=body.floor_height,
+        area_per_unit=body.area_per_unit, far_override=body.far_override)
+
+
 @api.get("/site-layout/defaults")
 async def site_layout_defaults():
     return {"config": siteplanlib.SiteLayoutConfig().to_dict()}
@@ -580,46 +604,204 @@ async def run_gis(project_id: str, body: GisIn, user: dict = Depends(get_current
     return {"gis": result, "stale": False, "has_polygon": True}
 
 
+# ---------------------------------------------------------------- AI assistance
+# Every AI feature shares one shape: build a context dict out of numbers the app has
+# ALREADY computed, hand it to ai.generate_markdown with a task-specific system prompt,
+# and store the markdown on the project so it survives a reload. The model never
+# calculates anything -- it only explains what the engine produced.
+
+async def _run_ai(kind: str, context: dict, *, store_at: str = "", project_id: str = "",
+                  user: dict = None, activity: str = "") -> dict:
+    """Shared tail of every AI endpoint: call the model, store, log."""
+    try:
+        result = await ailib.generate_markdown(
+            ailib.PROMPTS[kind],
+            "Use only the JSON data below.\n\n" + ailib.context_block(context),
+            session_hint=f"{kind}-{project_id}",
+        )
+    except ailib.AIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ailib.AIFailed as exc:
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+
+    summary = {"text": result["text"], "model": result["model"],
+               "provider": result["provider"], "generated_at": now_iso()}
+    if store_at and project_id:
+        await db.projects.update_one({"_id": oid(project_id)},
+                                     {"$set": {store_at: summary, "updated_at": now_iso()}})
+    if activity and project_id and user:
+        await log_activity(project_id, user, activity, f"{result['model']} analysis generated")
+    return summary
+
+
+@api.get("/ai/status")
+async def ai_status(user: dict = Depends(get_current_user)):
+    """Lets the UI grey out AI buttons (and say why) instead of failing on click."""
+    return ailib.provider()
+
+
 @api.post("/projects/{project_id}/gis/ai-summary")
 async def gis_ai_summary(project_id: str, user: dict = Depends(get_current_user)):
     proj = await load_project(project_id, user, write=True)
     stored = proj.get("gis")
     if not stored:
         raise HTTPException(status_code=400, detail="Run the site analysis before generating an AI summary")
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="LLM key not configured")
-
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    import json as _json
-
     context = gislib.ai_context(proj, stored)
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"gis-{project_id}",
-        system_message=(
-            "You are a senior civil engineer and site planner advising on apartment development feasibility. "
-            "Write a concise, technical site analysis in markdown with these sections: "
-            "**Verdict** (2 sentences), **Strengths** (bullets), **Weaknesses & Risks** (bullets), "
-            "**Design & Engineering Recommendations** (bullets referencing slope, drainage, orientation, "
-            "access and ventilation). Quote the numbers you are given. Never invent data that is not provided; "
-            "if a dataset is unavailable, say so plainly. Keep it under 400 words."
-        ),
-    ).with_model("anthropic", "claude-sonnet-4-6")
+    return await _run_ai("gis", context, store_at="gis.ai_summary",
+                         project_id=project_id, user=user, activity="gis.ai_summary")
 
-    try:
-        text = await chat.send_message(UserMessage(
-            text="Analyse this site using only the JSON data below.\n\n```json\n"
-                 + _json.dumps(context, indent=1) + "\n```"))
-    except Exception as exc:
-        logger.exception("AI site analysis failed")
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
 
-    summary = {"text": text, "model": "claude-sonnet-4-6", "generated_at": now_iso()}
-    await db.projects.update_one({"_id": oid(project_id)},
-                                 {"$set": {"gis.ai_summary": summary, "updated_at": now_iso()}})
-    await log_activity(project_id, user, "gis.ai_summary", "Claude Sonnet 4.6 site analysis generated")
-    return summary
+@api.post("/projects/{project_id}/ai/compliance")
+async def ai_compliance(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    comp = an["compliance"]
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "score_pct": comp["score"], "passed": comp["passed"], "failed": comp["failed"],
+        "total_rules": comp["total"], "overall": comp["overall"],
+        "measured_parameters": comp["params"],
+        "rules": [{"code": r["code"], "label": r["label"], "param": r["param"],
+                   "requirement": f"{r['operator']} {r['threshold']}{r.get('unit') or ''}",
+                   "actual": r["actual"], "status": r["status"]} for r in comp["results"]],
+        "context_for_fixes": {
+            "far": an["areas"]["far"], "ground_coverage_pct": an["areas"]["ground_coverage_pct"],
+            "open_space_pct": an["areas"]["open_space_pct"],
+            "total_units": an["areas"]["total_units"],
+            "parking_required": an["parking"]["required_slots"],
+            "parking_provided": an["parking"]["provided_slots"],
+            "towers": [{"name": t.get("name"), "floors": t.get("floors")}
+                       for t in (proj.get("towers") or [])],
+        },
+    }
+    return await _run_ai("compliance", context, store_at="ai.compliance",
+                         project_id=project_id, user=user, activity="ai.compliance")
+
+
+@api.post("/projects/{project_id}/ai/report")
+async def ai_report(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    ar, co, pk, cost = an["areas"], an["compliance"], an["parking"], an["cost"]
+    context = {
+        "project": {"name": proj.get("name"), "client": proj.get("client"),
+                    "location": proj.get("location"), "status": proj.get("status")},
+        "scale": {"plot_area_sqm": ar["plot_area_sqm"], "plot_area_acres": ar["plot_area_acres"],
+                  "builtup_area_sqm": ar["builtup_area_sqm"], "carpet_area_sqm": ar["carpet_area_sqm"],
+                  "far": ar["far"], "fsi": ar["fsi"],
+                  "ground_coverage_pct": ar["ground_coverage_pct"],
+                  "open_space_pct": ar["open_space_pct"], "total_units": ar["total_units"],
+                  "max_height_m": ar["max_height_m"],
+                  "density_units_per_acre": ar["density_units_per_acre"],
+                  "tower_count": len(proj.get("towers") or [])},
+        "cost_inr": {"total": cost["total"], "per_unit": cost["per_unit"],
+                     "per_sqm": cost["per_sqm"], "material": cost["material"],
+                     "labour": cost["labour"], "equipment": cost["equipment"]},
+        "parking": {"required": pk["required_slots"], "provided": pk["provided_slots"],
+                    "deficit": pk["deficit"]},
+        "compliance": {"score_pct": co["score"], "passed": co["passed"], "failed": co["failed"],
+                       "failing_rules": [r["label"] for r in co["results"] if r["status"] == "fail"]},
+        "utilities": an.get("utilities"),
+    }
+    return await _run_ai("report", context, store_at="ai.report",
+                         project_id=project_id, user=user, activity="ai.report")
+
+
+@api.post("/projects/{project_id}/ai/cost")
+async def ai_cost(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    bill = an["boq"]
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "scale": {"builtup_area_sqm": an["areas"]["builtup_area_sqm"],
+                  "carpet_area_sqm": an["areas"]["carpet_area_sqm"],
+                  "total_units": an["areas"]["total_units"]},
+        "cost_inr": an["cost"],
+        "quantities": an["quantities"],
+        "boq": {k: v for k, v in bill.items() if k != "currency"},
+        "configured_rates": {"materials": proj.get("rates"), "labour": proj.get("labour_rates"),
+                             "equipment": proj.get("equipment_rates")},
+        "quantity_ratios": proj.get("quantity_ratios"),
+    }
+    return await _run_ai("cost", context, store_at="ai.cost",
+                         project_id=project_id, user=user, activity="ai.cost")
+
+
+@api.post("/projects/{project_id}/ai/engineering")
+async def ai_engineering(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    eng = englib.analyse_engineering(proj, engine.analyse(proj))
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "city_reference": eng.get("city_reference"),
+        "summary": eng.get("summary"),
+        "modules": {k: {"title": m.get("title"), "outputs": m.get("outputs"),
+                        "derived": m.get("derived"),
+                        "recommendation": m.get("recommendation"),
+                        "code_refs": m.get("code_refs") or m.get("codes")}
+                    for k, m in (eng.get("modules") or {}).items()},
+        "per_tower": eng.get("per_tower"),
+        "missing_inputs": eng.get("missing_inputs"),
+        "warnings": eng.get("warnings"),
+    }
+    return await _run_ai("engineering", context, store_at="ai.engineering",
+                         project_id=project_id, user=user, activity="ai.engineering")
+
+
+@api.get("/projects/{project_id}/ai/compare")
+async def ai_compare(project_id: str, a: str = "", b: str = "",
+                     user: dict = Depends(get_current_user)):
+    """Narrative for a two-scheme comparison. Not stored -- it belongs to the chosen pair,
+    not to the project, so caching it on the document would go stale silently."""
+    if not a or not b:
+        raise HTTPException(status_code=400, detail="Pick two schemes to compare")
+    comparison = await compare_versions(project_id, a=a, b=b, user=user)
+    schemes = comparison["schemes"]
+    keys = comparison["keys"]
+    context = {
+        "currency": comparison["currency"],
+        "scheme_a": {"label": schemes[0]["label"], "saved_at": schemes[0]["at"],
+                     "metrics": schemes[0]["metrics"]},
+        "scheme_b": {"label": schemes[1]["label"], "saved_at": schemes[1]["at"],
+                     "metrics": schemes[1]["metrics"]},
+        "metrics_that_differ": [k for k in keys
+                                if schemes[0]["metrics"].get(k) != schemes[1]["metrics"].get(k)],
+    }
+    return await _run_ai("compare", context, project_id=project_id)
+
+
+# ---------------------------------------------------------------- programme
+class ScheduleIn(BaseModel):
+    """Partial config; anything omitted falls back to ScheduleConfig defaults."""
+    config: Dict[str, Any] = Field(default_factory=dict)
+    summary: bool = False       # headline figures only -- see schedule.plan_schedule
+
+
+@api.get("/schedule/defaults")
+async def schedule_defaults(user: dict = Depends(get_current_user)):
+    return {"config": schedlib.ScheduleConfig().to_dict(),
+            "formwork_is456": schedlib.FORMWORK_IS456,
+            "curing_min_days": schedlib.CURING_MIN_DAYS}
+
+
+@api.post("/projects/{project_id}/schedule")
+async def build_schedule(project_id: str, body: ScheduleIn,
+                         user: dict = Depends(get_current_user)):
+    """Derive the construction programme from the project's own quantities."""
+    proj = await load_project(project_id, user)
+    return schedlib.plan_schedule(proj, engine.analyse(proj), body.config, summary=body.summary)
+
+
+class ScheduleLiveIn(ScheduleIn):
+    project: Dict[str, Any]
+
+
+@api.post("/schedule")
+async def build_schedule_live(body: ScheduleLiveIn, user: dict = Depends(get_current_user)):
+    """Stateless variant for live editing before save."""
+    return schedlib.plan_schedule(body.project, engine.analyse(body.project), body.config,
+                                  summary=body.summary)
 
 
 # ---------------------------------------------------------------- versions

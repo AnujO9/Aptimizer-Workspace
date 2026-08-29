@@ -10,7 +10,9 @@ from .errors import LayoutError
 from .fitness import FitnessResult, PackContext, TowerPlacement, evaluate
 from .frame import geom_to_latlng, geom_to_local, polygons_of
 from .pack import greedy_pack
+from .parking import ParkingBay, bays_geometry, generate_bays
 from .reserve import ReserveResult, reserve
+from .version import ENGINE_VERSION, polygon_signature
 
 
 @dataclass
@@ -18,8 +20,10 @@ class LayoutResult:
     reservation: ReserveResult
     towers: List[TowerPlacement]
     fitness: FitnessResult
+    bays: List[ParkingBay] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     method: str = "greedy"
+    signature: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         res = self.reservation
@@ -32,9 +36,23 @@ class LayoutResult:
         units = sum(t.units(cfg) for t in self.towers)
         open_space = plot_area - footprint
 
+        bay_area = sum(b.polygon.area for b in self.bays)
         base = res.to_dict()
         base.update({
             "stage": "layout",
+            # Stamped so a consumer can tell a layout apart from the polygon it was
+            # generated for. Editing the boundary used to leave a stale layout on the
+            # project, which is how towers ended up drawn outside a plot they never
+            # belonged to.
+            "engine_version": ENGINE_VERSION,
+            "polygon_signature": self.signature,
+            "surface_parking": {
+                "bay_count": len(self.bays),
+                "area_sqm": round(bay_area, 2),
+                "stall_size_m": [cfg.parking.stall_width, cfg.parking.stall_depth],
+                "polygons": geom_to_latlng(bays_geometry(self.bays), frame),
+                "polygons_local": geom_to_local(bays_geometry(self.bays)),
+            },
             "method": self.method,
             "towers": [
                 {
@@ -64,6 +82,7 @@ class LayoutResult:
                 "ground_coverage_pct": round(footprint / plot_area * 100, 2) if plot_area else 0.0,
                 "open_space_pct": round(open_space / plot_area * 100, 2) if plot_area else 0.0,
                 "unit_count": units,
+                "surface_bays": len(self.bays),
                 "feasible": self.fitness.feasible,
                 "score": round(self.fitness.score, 2) if self.fitness.feasible else None,
                 "penalties": {k: round(v, 2) for k, v in self.fitness.penalties.items()},
@@ -85,6 +104,15 @@ def plan(coordinates: Sequence[Sequence[float]],
     towers, notes = greedy_pack(ctx)
     fit = evaluate(towers, ctx)
 
+    # Bays go into whatever open land is left beside a road once the towers are down, so
+    # they can never overlap a building by construction.
+    occupied = [t.polygon for t in towers] + [a.polygon for a in res.amenities]
+    free = res.residual
+    if occupied:
+        from shapely.ops import unary_union as _uu
+        free = res.residual.difference(_uu(occupied).buffer(0.5))
+    bays = generate_bays(res.roads, free, cfg)
+
     warnings = list(notes)
     if not towers:
         warnings.append("No tower footprint fits the packable land at the configured sizes. "
@@ -92,8 +120,9 @@ def plan(coordinates: Sequence[Sequence[float]],
     if not fit.feasible:
         warnings.append("Layout failed a hard constraint: " + "; ".join(fit.hard_violations[:3]))
 
-    return LayoutResult(reservation=res, towers=towers, fitness=fit,
-                        warnings=warnings, method="greedy")
+    return LayoutResult(reservation=res, towers=towers, fitness=fit, bays=bays,
+                        warnings=warnings, method="greedy",
+                        signature=polygon_signature(coordinates))
 
 
 def plan_site(project: Dict[str, Any],

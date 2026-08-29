@@ -2,17 +2,17 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Building2, Copy, Link2, Pencil, Plus, Trash2, Users, X } from "lucide-react";
-import { api, apiError } from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
-import { TopBar } from "@/components/TopBar";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { dt, int, money, num } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
+import { TopBar } from "../components/TopBar";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { dt, int, money, num } from "../lib/format";
 
-const EMPTY = { name: "", client: "", location: "", plot_reference: "" };
+const EMPTY = { name: "", client: "", location: "", plot_reference: "", latitude: "", longitude: "" };
 
 export default function Projects() {
   const { user } = useAuth();
@@ -47,9 +47,16 @@ export default function Projects() {
 
   const create = async () => {
     if (!form.name.trim()) return toast.error("Project name is required");
+    if ((form.latitude && !form.longitude) || (!form.latitude && form.longitude))
+      return toast.error("Enter both latitude and longitude, or leave both blank");
     setBusy(true);
     try {
-      const { data } = await api.post("/projects", form);
+      const payload = {
+        ...form,
+        latitude: form.latitude !== "" ? Number(form.latitude) : null,
+        longitude: form.longitude !== "" ? Number(form.longitude) : null,
+      };
+      const { data } = await api.post("/projects", payload);
       toast.success("Project created");
       setForm(EMPTY);
       setOpen(false);
@@ -173,6 +180,25 @@ export default function Projects() {
                     <Label className="text-xs uppercase tracking-wide text-slate-500">Plot / survey reference</Label>
                     <Input className="rounded-sm" placeholder="Survey No. 42/1B" data-testid="project-plot_reference-input"
                       value={form.plot_reference} onChange={(e) => setForm((f) => ({ ...f, plot_reference: e.target.value }))} />
+                    <p className="text-[11px] text-slate-500">
+                      A label for your own records only -- it does not set the map location.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wide text-slate-500">Latitude</Label>
+                      <Input className="rounded-sm" type="number" step="any" placeholder="17.4239" data-testid="project-latitude-input"
+                        value={form.latitude} onChange={(e) => setForm((f) => ({ ...f, latitude: e.target.value }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wide text-slate-500">Longitude</Label>
+                      <Input className="rounded-sm" type="number" step="any" placeholder="78.4738" data-testid="project-longitude-input"
+                        value={form.longitude} onChange={(e) => setForm((f) => ({ ...f, longitude: e.target.value }))} />
+                    </div>
+                    <p className="text-[11px] text-slate-500 col-span-2">
+                      GPS coordinates of the plot (from Google Maps or a survey sketch) -- sets the exact map
+                      centre. Leave blank to start from the selected city's centre instead.
+                    </p>
                   </div>
                 </div>
                 <DialogFooter>

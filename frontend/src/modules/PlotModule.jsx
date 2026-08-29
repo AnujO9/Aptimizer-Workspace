@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { PlotMap } from "@/components/PlotMap";
-import { Metric, NumField, Section, TextField } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Input } from "@/components/ui/input";
-import { api, apiError } from "@/lib/api";
-import { COMPASS, num } from "@/lib/format";
+import { PlotMap } from "../components/PlotMap";
+import { Metric, NumField, Section, TextField } from "../components/Field";
+import { Button } from "../components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Input } from "../components/ui/input";
+import { api, apiError } from "../lib/api";
+import { COMPASS, num } from "../lib/format";
+import { polygonSignature } from "../lib/scene";
 import { Plus, Trash2 } from "lucide-react";
 
 // Distinct styled layers so envelope, circulation, amenities and packable land stay
@@ -33,8 +34,13 @@ export default function PlotModule({ project, analysis, update, readOnly }) {
 
   const setPlot = (key, value) => update((p) => {
     p.plot[key] = value;
-    if (key === "coordinates") p.plot.is_placeholder = false;
-    setLayout(null);          // geometry changed — the old layout no longer applies
+    if (key === "coordinates") {
+      p.plot.is_placeholder = false;
+      // Drop the saved layout too, not just the local preview. Leaving it behind is what
+      // caused towers from a previous boundary to keep rendering over a new one.
+      delete p.site_layout;
+    }
+    setLayout(null);
     setLayoutError("");
   });
 
@@ -59,7 +65,8 @@ export default function PlotModule({ project, analysis, update, readOnly }) {
         setLayout(data);
         // Persist a full layout on the project so the 3D view and the map read the same
         // engine output instead of each deriving their own placement.
-        if (stage === "plan") update((p) => { p.site_layout = data; });
+        if (stage === "plan")
+          update((p) => { p.site_layout = { ...data, _client_signature: polygonSignature(coords) }; });
       } else {
         setLayout(null);
         setLayoutError(data.error?.message || "Could not compute the site layout.");

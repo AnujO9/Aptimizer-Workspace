@@ -1,0 +1,298 @@
+"""Quantity take-off from the structure the app has already designed.
+
+The BOQ used to come from flat thumb rules -- 0.40 m3 of concrete and 45 kg of steel per
+m2 of built-up area, applied whatever the building was. Those numbers do not know how many
+floors the tower has, how far apart the columns are, how thick the slab is, or which
+seismic zone the site sits in, even though the app computes all four. A 4-storey block on a
+6 m grid and a 24-storey tower on a 4 m grid got the same rate per m2, which is the single
+least defensible number in the estimate.
+
+This module derives the quantities instead, the way a quantity surveyor would: count the
+columns the grid implies, take their designed section, multiply by height; run the beams
+along the grid lines; take the slab at its designed thickness; size the footings from the
+service load and the soil. Steel follows each member rather than the floor area -- and for
+columns it uses the percentage the engineer actually specified, so it is arithmetic, not a
+rule of thumb. Cement, sand and aggregate come from the IS 10262 mix proportions for the
+grade chosen, not from a per-m2 constant.
+
+The old ratios remain available and the payload reports both, because a take-off that
+silently disagrees with every estimator's intuition is worse than one you can check.
+
+SINGLE SOURCE OF TRUTH
+----------------------
+`column_section`, `beam_section` and `mix_proportions` live here and are imported by
+`engineering` as well. They were previously written out twice, which is how the app ended
+up sizing a column for M25 after the user had picked M40 in the mix module.
+"""
+import math
+from typing import Any, Dict, List, Optional
+
+import iscodes as C
+
+STEEL_DENSITY = 7850.0          # kg/m3
+
+# Reinforcement by member, kg per m3 of concrete. Columns are NOT in this table: their
+# steel comes from the percentage the engineer specified, which is an exact figure.
+STEEL_KG_PER_M3 = {"slab": 80.0, "beam": 150.0, "footing": 70.0, "stair": 110.0}
+
+# IS 13920 ductile detailing adds confinement steel in the plastic-hinge regions. It is a
+# real quantity, not a contingency, and it lands on columns and beams only.
+DUCTILE_STEEL_FACTOR = 1.15
+DUCTILE_ZONES = ("III", "IV", "V")
+
+# Cores, lift walls, staircases and landings are not on the column grid and are not worth
+# modelling individually at estimate stage; they are a well-known share of frame concrete.
+CORE_CONCRETE_SHARE = 0.09
+FOOTING_DEPTH_MIN_M = 0.45
+PCC_THICKNESS_M = 0.10
+
+
+# ---------------------------------------------------------------- member sizing
+def column_section(req_area_mm2: float) -> tuple:
+    """(breadth, depth) in mm for a required gross area, rounded to 25 mm sizes."""
+    side = max(math.ceil(math.sqrt(max(req_area_mm2, 1.0)) / 25.0) * 25.0, 230.0)
+    b = max(230.0 if side <= 300 else round(side * 0.65 / 25) * 25, 230.0)
+    d = max(round(req_area_mm2 / b / 25) * 25, 300.0)
+    return b, d
+
+
+def column_required_area(load_kn: float, fck: float, fy: float, steel_pct: float) -> float:
+    """IS 456 Cl. 39.3 short-column axial capacity, inverted for area."""
+    p = max(steel_pct, 0.8) / 100.0
+    cap = 0.4 * fck + (0.67 * fy - 0.4 * fck) * p
+    return load_kn * 1000.0 / cap if cap > 0 else 0.0
+
+
+def beam_section(span_m: float, support: str = "simply supported") -> tuple:
+    """(width, depth) in mm from the span/depth ratio for the support condition."""
+    divisor = 12.0 if support == "simply supported" else 15.0
+    d = max(math.ceil(span_m * 1000 / divisor / 25) * 25, 300)
+    w = max(round(d / 2 / 25) * 25, 230)
+    return float(w), float(d)
+
+
+def mix_proportions(grade: int, exposure_key: str, agg_mm: int) -> Dict[str, float]:
+    """IS 10262:2019 proportioning -- kg of cement, sand and aggregate per m3."""
+    exposure = C.EXPOSURE.get(exposure_key, C.EXPOSURE["moderate"])
+    wc = exposure["max_wc"]
+    water = C.MIX_WATER.get(agg_mm, 186)
+    cement = max(round(water / wc, 1), exposure["min_cement"])
+    if cement > water / wc:
+        wc = round(water / cement, 3)
+    ca_vol = round(C.MIX_CA_VOLUME.get(agg_mm, 0.62) + 0.01 * ((0.50 - wc) / 0.05), 3)
+    fa_vol = round(1 - ca_vol, 3)
+    air = 0.02 if agg_mm == 10 else 0.01
+    vol_agg = 1 - air - (cement / (C.SG["cement"] * 1000)) - (water / 1000.0)
+    return {
+        "ca_volume_fraction": ca_vol,
+        "fa_volume_fraction": fa_vol,
+        "cement_kg": cement,
+        "coarse_kg": round(vol_agg * ca_vol * C.SG["coarse"] * 1000, 1),
+        "fine_kg": round(vol_agg * fa_vol * C.SG["fine"] * 1000, 1),
+        "water_l": float(water),
+        "wc_ratio": wc,
+        "target_strength": round(grade + 1.65 * C.MIX_STD_DEV.get(grade, 5.0), 2),
+    }
+
+
+# ---------------------------------------------------------------- grid geometry
+def grid_counts(footprint_sqm: float, bay_x_m: float, bay_y_m: float) -> Dict[str, float]:
+    """Columns and beam runs implied by a grid over a footprint.
+
+    The plan outline is unknown at this stage, so it is taken as the square of equal area.
+    That is the neutral assumption: any elongated plan of the same area needs slightly more
+    beam length and slightly fewer columns, and the two errors work against each other.
+    """
+    a = max(float(footprint_sqm), 0.0)
+    bx = max(float(bay_x_m), 1.0)
+    by = max(float(bay_y_m), 1.0)
+    if a <= 0:
+        return {"lx": 0.0, "ly": 0.0, "nx": 0, "ny": 0, "columns": 0, "beam_length_m": 0.0}
+    side = math.sqrt(a)
+    nx = int(math.floor(side / bx)) + 1          # grid lines across
+    ny = int(math.floor(side / by)) + 1
+    return {
+        "lx": side, "ly": side, "nx": nx, "ny": ny,
+        "columns": nx * ny,
+        # Beams run along every grid line in both directions.
+        "beam_length_m": ny * side + nx * side,
+    }
+
+
+# ---------------------------------------------------------------- take-off
+def structural_takeoff(project: Dict[str, Any], areas: Dict[str, Any]) -> Dict[str, Any]:
+    """Concrete, steel, formwork and mix materials, derived per tower from the design.
+
+    Accepts either the `areas` block or a whole analysis dict, because both call sites
+    exist and passing the wrong one is otherwise a silent empty take-off.
+    """
+    if "towers" not in areas and isinstance(areas.get("areas"), dict):
+        areas = areas["areas"]
+    e = {**{"grid_bay_x_m": 5.0, "grid_bay_y_m": 5.0, "slab_thickness_mm": 150,
+            "beam_span_m": 5.0, "beam_support": "simply supported", "concrete_grade": 25,
+            "steel_grade": 415, "column_steel_pct": 1.0, "exposure_condition": "moderate",
+            "aggregate_size_mm": 20, "finishes_load_kn_sqm": 1.5},
+          **(project.get("engineering") or {})}
+
+    bx, by = float(e["grid_bay_x_m"]), float(e["grid_bay_y_m"])
+    slab_t = float(e["slab_thickness_mm"]) / 1000.0
+    fck, fy = float(e["concrete_grade"]), float(e["steel_grade"])
+    col_pct = max(float(e["column_steel_pct"]), 0.8)
+    beam_w_mm, beam_d_mm = beam_section(float(e["beam_span_m"]), e["beam_support"])
+    beam_w, beam_d = beam_w_mm / 1000.0, beam_d_mm / 1000.0
+    trib = bx * by
+
+    city = C.city_reference(e.get("city"), e.get("state"))
+    zone = str(city.get("zone") or "II")
+    ductile = zone in DUCTILE_ZONES
+
+    # Fall back to the engineering module's own default rather than the first entry in the
+    # table -- that is "hard rock" at 3240 kN/m2, which would silently size footings for
+    # the best ground in India on a project that never set a soil type.
+    soil = C.SOILS.get(e.get("soil_type")) or C.SOILS["dense sand"]
+    sbc = float(soil.get("sbc") or 150.0)
+
+    # Service load per m2 of floor -- the same dead + live basis the loads module uses.
+    slab_self = C.UNIT_WEIGHTS["rcc"] * slab_t
+    finishes = float(e["finishes_load_kn_sqm"])
+    live = C.LIVE_LOADS["residential_room"]
+    service_per_sqm = slab_self + finishes + live
+    factored_per_sqm = 1.5 * service_per_sqm
+
+    rows: List[Dict[str, Any]] = []
+    tot = {"concrete_m3": 0.0, "steel_kg": 0.0, "formwork_sqm": 0.0}
+
+    for t in (areas.get("towers") or []):
+        foot = float(t.get("footprint_sqm") or 0)
+        floors = max(int(t.get("floors") or 0), 0)
+        fh = float(t.get("floor_height") or 3.0)
+        if foot <= 0 or floors <= 0:
+            continue
+        g = grid_counts(foot, bx, by)
+        n_col = g["columns"]
+
+        # Column at the base carries every floor above it; sizing on that governs.
+        col_load = factored_per_sqm * trib * floors
+        cb_mm, cd_mm = column_section(column_required_area(col_load, fck, fy, col_pct))
+        cb, cd = cb_mm / 1000.0, cd_mm / 1000.0
+        clear_h = max(fh - beam_d, 0.5)
+
+        col_c = cb * cd * clear_h * n_col * floors
+        beam_c = g["beam_length_m"] * beam_w * max(beam_d - slab_t, 0.05) * floors
+        slab_c = foot * slab_t * floors
+        core_c = (col_c + beam_c + slab_c) * CORE_CONCRETE_SHARE
+
+        # Footings: service load on one column, spread at the soil's safe bearing capacity.
+        col_service = service_per_sqm * trib * floors
+        f_area = col_service / sbc if sbc else 0.0
+        f_side = math.sqrt(f_area) + 0.05 if f_area > 0 else 0.0
+        f_depth = max(f_side / 4.0, FOOTING_DEPTH_MIN_M)
+        found_c = f_side * f_side * f_depth * n_col
+        pcc_c = (f_side + 0.2) ** 2 * PCC_THICKNESS_M * n_col
+
+        col_steel = col_c * (col_pct / 100.0) * STEEL_DENSITY
+        beam_steel = beam_c * STEEL_KG_PER_M3["beam"]
+        slab_steel = slab_c * STEEL_KG_PER_M3["slab"]
+        core_steel = core_c * STEEL_KG_PER_M3["stair"]
+        found_steel = found_c * STEEL_KG_PER_M3["footing"]
+        if ductile:
+            col_steel *= DUCTILE_STEEL_FACTOR
+            beam_steel *= DUCTILE_STEEL_FACTOR
+
+        fw_slab = foot * floors
+        fw_beam = g["beam_length_m"] * (2 * max(beam_d - slab_t, 0.05) + beam_w) * floors
+        fw_col = 2 * (cb + cd) * clear_h * n_col * floors
+
+        concrete = col_c + beam_c + slab_c + core_c + found_c + pcc_c
+        steel = col_steel + beam_steel + slab_steel + core_steel + found_steel
+        formwork = fw_slab + fw_beam + fw_col
+
+        rows.append({
+            "id": t.get("id"), "name": t.get("name"), "floors": floors,
+            "footprint_sqm": round(foot, 2),
+            "grid": f"{bx:g} m x {by:g} m", "columns_per_floor": n_col,
+            "column_section_mm": f"{int(cb_mm)} x {int(cd_mm)}",
+            "beam_section_mm": f"{int(beam_w_mm)} x {int(beam_d_mm)}",
+            "slab_thickness_mm": round(slab_t * 1000),
+            "footing_size_m": round(f_side, 2), "sbc_kn_sqm": sbc,
+            "concrete": {"columns": round(col_c, 2), "beams": round(beam_c, 2),
+                         "slabs": round(slab_c, 2), "cores_and_stairs": round(core_c, 2),
+                         "footings": round(found_c, 2), "pcc": round(pcc_c, 2),
+                         "total_m3": round(concrete, 2)},
+            "steel": {"columns": round(col_steel), "beams": round(beam_steel),
+                      "slabs": round(slab_steel), "cores_and_stairs": round(core_steel),
+                      "footings": round(found_steel), "total_kg": round(steel)},
+            "formwork_sqm": round(formwork, 1),
+            "ductile_detailing": ductile,
+        })
+        tot["concrete_m3"] += concrete
+        tot["steel_kg"] += steel
+        tot["formwork_sqm"] += formwork
+
+    mix = mix_proportions(int(fck), e["exposure_condition"], int(e["aggregate_size_mm"]))
+    vol = tot["concrete_m3"]
+    builtup = float(areas.get("builtup_area_sqm") or 0)
+
+    return {
+        "ok": True,
+        "basis": {
+            "grid": f"{bx:g} m x {by:g} m", "slab_mm": round(slab_t * 1000),
+            "concrete_grade": f"M{int(fck)}", "steel_grade": f"Fe{int(fy)}",
+            "column_steel_pct": col_pct, "seismic_zone": zone,
+            "ductile_detailing": ductile, "sbc_kn_sqm": sbc,
+        },
+        "towers": rows,
+        "totals": {
+            "concrete_m3": round(vol, 2),
+            "steel_kg": round(tot["steel_kg"]),
+            "formwork_sqm": round(tot["formwork_sqm"], 1),
+            "cement_kg": round(mix["cement_kg"] * vol),
+            "cement_bags": round(mix["cement_kg"] * vol / 50.0),
+            "sand_kg": round(mix["fine_kg"] * vol),
+            "sand_m3": round(mix["fine_kg"] * vol / 1600.0, 2),      # bulk density ~1600 kg/m3
+            "aggregate_kg": round(mix["coarse_kg"] * vol),
+            "aggregate_m3": round(mix["coarse_kg"] * vol / 1500.0, 2),
+            "water_l": round(mix["water_l"] * vol),
+        },
+        "mix_per_cum": mix,
+        "warnings": _sanity(vol, tot["steel_kg"], builtup),
+        # What the discarded thumb rules would have said, so the two can be compared.
+        "vs_thumb_rule": {
+            "concrete_m3_per_sqm": round(vol / builtup, 3) if builtup else 0,
+            "steel_kg_per_sqm": round(tot["steel_kg"] / builtup, 1) if builtup else 0,
+            "thumb_concrete_m3_per_sqm": 0.40,
+            "thumb_steel_kg_per_sqm": 45.0,
+            "note": "Derived from the designed sections and the column grid. A wide grid or "
+                    "a tall tower pushes these above the flat thumb rule; a low-rise block "
+                    "on a tight grid falls below it.",
+        },
+    }
+
+
+# Bands an Indian QS would sense-check a residential RCC take-off against. Falling outside
+# them is not necessarily wrong -- a wide grid or a tall tower legitimately pushes past the
+# top -- but it means an input is doing something unusual and is worth a look before the
+# estimate is issued.
+CONCRETE_BAND_M3_PER_SQM = (0.22, 0.48)
+STEEL_BAND_KG_PER_M3 = (75.0, 135.0)
+
+
+def _sanity(concrete_m3: float, steel_kg: float, builtup_sqm: float) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    if builtup_sqm <= 0 or concrete_m3 <= 0:
+        return out
+    per_sqm = concrete_m3 / builtup_sqm
+    lo, hi = CONCRETE_BAND_M3_PER_SQM
+    if not (lo <= per_sqm <= hi):
+        out.append({"severity": "warning", "metric": "concrete",
+                    "text": f"Concrete works out at {per_sqm:.3f} m3 per m2 of built-up area, "
+                            f"outside the {lo}-{hi} range typical of Indian residential RCC. "
+                            "Check the slab thickness and the column grid."})
+    ratio = steel_kg / concrete_m3
+    slo, shi = STEEL_BAND_KG_PER_M3
+    if not (slo <= ratio <= shi):
+        out.append({"severity": "warning", "metric": "steel",
+                    "text": f"Reinforcement works out at {ratio:.0f} kg per m3 of concrete, "
+                            f"outside the usual {slo:.0f}-{shi:.0f} kg/m3. Check the column "
+                            "steel percentage and the seismic zone."})
+    return out

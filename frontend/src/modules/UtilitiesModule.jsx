@@ -1,5 +1,5 @@
-import { Metric, NumField, Section } from "@/components/Field";
-import { int, num } from "@/lib/format";
+import { Metric, NumField, Section } from "../components/Field";
+import { int, num } from "../lib/format";
 
 export default function UtilitiesModule({ project, analysis, update, readOnly }) {
   const u = analysis?.utilities;

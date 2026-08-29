@@ -12,7 +12,7 @@
 // gets the colour change and the focus ring and none of the movement.
 // Transitions name the properties they animate, never `all`.
 import { forwardRef, useCallback, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "../../lib/utils";
 
 const VARIANTS = {
   primary: "bg-blue-600 text-white hover:bg-blue-700 border border-blue-600 hover:border-blue-700",

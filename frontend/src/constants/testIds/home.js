@@ -15,6 +15,8 @@ export const LANDING = {
 	navPrimaryCta: 'landing-nav-primary-cta',
 
 	hero: 'landing-hero',
+	heroCopy: 'landing-hero-copy',
+	heroIntro: 'landing-hero-intro',
 	heroPrimaryCta: 'landing-hero-primary-cta',
 	heroSecondaryCta: 'landing-hero-secondary-cta',
 	blueprint: 'landing-blueprint',

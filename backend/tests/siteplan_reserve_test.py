@@ -57,16 +57,43 @@ def test_ring_and_residual_do_not_overlap():
     assert r.ring.intersection(r.residual).area == pytest.approx(0.0, abs=1e-6)
 
 
-def test_ring_plus_core_reconstructs_the_envelope():
+def test_ring_plus_core_accounts_for_the_whole_envelope():
+    """Every square metre of the envelope is ring, driveway, green or packable land —
+    apart from the deliberate clearance ring held around the green, which belongs to
+    neither it nor the packable region. So this is a tight bound, not an equality."""
     r = run(box_pts(120, 90), amenities={"enabled": False})
-    rebuilt = r.ring.union(r.residual).union(r.driveways)
-    assert rebuilt.area == pytest.approx(r.envelope.envelope.area, rel=1e-3)
+    rebuilt = r.ring.union(r.residual).union(r.driveways).union(r.green)
+    envelope = r.envelope.envelope.area
+
+    assert rebuilt.area <= envelope + 1.0, "reserved areas exceed the envelope"
+    assert rebuilt.area >= envelope * 0.94, "too much land is unaccounted for"
+
+    slack = envelope - rebuilt.area
+    clearance = r.envelope.config.open_space.clearance
+    ring_area = r.green.buffer(clearance).area - r.green.area if not r.green.is_empty else 0.0
+    assert slack == pytest.approx(ring_area, rel=0.05), \
+        f"{slack:.0f} m2 unaccounted for, but the green clearance ring is only {ring_area:.0f} m2"
 
 
 def test_ring_disabled_leaves_the_whole_envelope_packable():
-    r = run(box_pts(100, 80), road={"enabled": False}, amenities={"enabled": False})
-    assert r.ring.is_empty and r.driveways.is_empty
+    r = run(box_pts(100, 80), road={"enabled": False}, amenities={"enabled": False},
+            open_space={"enabled": False})
+    assert r.ring.is_empty and r.driveways.is_empty and r.green.is_empty
     assert r.residual.area == pytest.approx(r.envelope.envelope.area, rel=1e-6)
+
+
+def test_community_green_is_reserved_and_survives_packing():
+    """Reserved before towers so it cannot be quietly built over."""
+    r = run(box_pts(200, 150), amenities={"enabled": False})
+    assert not r.green.is_empty
+    assert r.green.area >= r.envelope.config.open_space.min_area
+    assert r.green.intersection(r.residual).area == pytest.approx(0.0, abs=1e-6)
+    assert r.envelope.envelope.buffer(1e-6).contains(r.green)
+
+
+def test_green_can_be_disabled():
+    r = run(box_pts(200, 150), open_space={"enabled": False})
+    assert r.green.is_empty
 
 
 def test_envelope_narrower_than_the_ring_warns_and_leaves_nothing_packable():

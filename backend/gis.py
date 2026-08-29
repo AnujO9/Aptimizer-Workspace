@@ -54,10 +54,32 @@ def point_in_polygon(pt, coords):
 
 
 def distance_to_polygon(pt, coords):
-    """Approximate distance in metres from a point to the polygon boundary (0 if inside)."""
+    """Distance in metres from a point to the polygon BOUNDARY (0 if inside).
+
+    Measured to each edge, not to the vertices. Vertex-only distance reports a road
+    running along the middle of a long edge as being as far away as the corner, which
+    then understates road access and flood risk on any plot with long sides.
+    """
     if point_in_polygon(pt, coords):
         return 0.0
-    return min(haversine(pt, c) for c in coords)
+    lat0 = sum(c[0] for c in coords) / len(coords)
+    k = math.cos(math.radians(lat0))
+
+    def xy(c):
+        return (c[1] * 111320.0 * k, c[0] * 110540.0)
+
+    px, py = xy(pt)
+    best = float("inf")
+    n = len(coords)
+    for i in range(n):
+        ax, ay = xy(coords[i])
+        bx, by = xy(coords[(i + 1) % n])
+        dx, dy = bx - ax, by - ay
+        seg = dx * dx + dy * dy
+        # Project the point onto the segment, clamped to its ends.
+        t = 0.0 if seg <= 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg))
+        best = min(best, math.hypot(px - (ax + t * dx), py - (ay + t * dy)))
+    return best
 
 
 def feature_distance(geometry, coords):
@@ -308,8 +330,31 @@ def wind_profile(lat, lng):
 
 
 # ------------------------------------------------------------------ sun path
+# Several zones this app targets are NOT whole-hour offsets, so deriving the offset as
+# round(lng/15) puts every solar result half an hour out. India is the worst case: IST is
+# +5:30 on the 82.5E meridian, but round(77/15) = 5 for most Indian cities. Boxes are
+# generous bounding boxes, checked before the whole-hour fallback.
+# Ordered most specific first: the India box overlaps Nepal and Myanmar, so those must be
+# tested before it or they inherit IST.
+HALF_HOUR_ZONES = [
+    (26.3, 30.5, 80.0, 88.3, 5.75),  # Nepal
+    (9.0, 28.6, 92.0, 101.2, 6.5),   # Myanmar
+    (29.3, 38.5, 60.5, 75.0, 4.5),   # Afghanistan
+    (25.0, 40.0, 44.0, 63.4, 3.5),   # Iran
+    (6.5, 37.5, 68.0, 97.5, 5.5),    # India + Sri Lanka (IST)
+]
+
+
+def utc_offset_hours(lat, lng):
+    """Standard-time UTC offset for a location, honouring half-hour zones."""
+    for s, n, w, e, off in HALF_HOUR_ZONES:
+        if s <= lat <= n and w <= lng <= e:
+            return off
+    return float(round(lng / 15.0))
+
+
 def solar_position(lat, lng, doy, hour_local):
-    tz_offset = round(lng / 15.0)
+    tz_offset = utc_offset_hours(lat, lng)
     gamma = 2 * math.pi / 365.0 * (doy - 1 + (hour_local - 12) / 24.0)
     eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
                        - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma))
@@ -337,6 +382,34 @@ def solar_position(lat, lng, doy, hour_local):
 SUN_DATES = [("summer_solstice", 172, "21 Jun"), ("equinox", 80, "21 Mar"), ("winter_solstice", 355, "21 Dec")]
 
 
+def sun_events(lat, lng, doy):
+    """Sunrise, sunset and daylight length in local clock hours (NOAA solar equations).
+
+    Solved from the sunrise hour angle rather than read off the 30-minute sampling grid
+    used to draw the path, which could only ever be right to the nearest half hour.
+    Includes the standard -0.833 deg refraction/semi-diameter correction.
+    """
+    gamma = 2 * math.pi / 365.0 * (doy - 1)
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
+                       - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma))
+    decl = (0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma)
+            - 0.006758 * math.cos(2 * gamma) + 0.000907 * math.sin(2 * gamma)
+            - 0.002697 * math.cos(3 * gamma) + 0.00148 * math.sin(3 * gamma))
+    latr = math.radians(lat)
+    cos_ha = ((math.cos(math.radians(90.833)) / (math.cos(latr) * math.cos(decl)))
+              - math.tan(latr) * math.tan(decl))
+    tz = utc_offset_hours(lat, lng)
+    if cos_ha > 1:      # sun never rises
+        return {"sunrise_hour": None, "sunset_hour": None, "daylight_hours": 0.0}
+    if cos_ha < -1:     # sun never sets
+        return {"sunrise_hour": None, "sunset_hour": None, "daylight_hours": 24.0}
+    ha = math.degrees(math.acos(cos_ha))
+    rise = (720 - 4 * (lng + ha) - eqtime) / 60.0 + tz
+    seti = (720 - 4 * (lng - ha) - eqtime) / 60.0 + tz
+    return {"sunrise_hour": round(rise, 2), "sunset_hour": round(seti, 2),
+            "daylight_hours": round(seti - rise, 2)}
+
+
 def sun_path(lat, lng, orientation_deg):
     paths = []
     for key, doy, label in SUN_DATES:
@@ -349,9 +422,7 @@ def sun_path(lat, lng, orientation_deg):
         paths.append({
             "key": key, "label": label,
             "points": points,
-            "sunrise_hour": points[0]["hour"] if points else None,
-            "sunset_hour": points[-1]["hour"] if points else None,
-            "daylight_hours": round((points[-1]["hour"] - points[0]["hour"]), 1) if points else 0,
+            **sun_events(lat, lng, doy),
             "peak_elevation": peak["elevation"] if peak else None,
             "peak_azimuth": peak["azimuth"] if peak else None,
         })

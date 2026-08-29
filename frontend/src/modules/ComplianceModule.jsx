@@ -1,11 +1,12 @@
 import { Check, X, Plus, Trash2 } from "lucide-react";
-import { Metric, Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { num } from "@/lib/format";
+import { Metric, Section } from "../components/Field";
+import { AiPanel } from "../components/AiPanel";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Switch } from "../components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { num } from "../lib/format";
 
 const PARAMS = [
   "far", "fsi", "ground_coverage_pct", "open_space_pct", "min_stair_width", "min_corridor_width",
@@ -13,7 +14,7 @@ const PARAMS = [
   "accessible_parking_pct", "parking_deficit",
 ];
 
-export default function ComplianceModule({ project, analysis, update, readOnly }) {
+export default function ComplianceModule({ project, analysis, update, readOnly, projectId, setProject }) {
   const c = analysis?.compliance;
   const rules = project.compliance_rules || [];
   const resultOf = (id) => (c?.results || []).find((r) => r.id === id);
@@ -139,6 +140,17 @@ export default function ComplianceModule({ project, analysis, update, readOnly }
           </TableBody>
         </Table>
       </Section>
+
+      <AiPanel
+        title="AI compliance review"
+        description="Explains each failing rule, why it exists and the design change that would close the gap"
+        endpoint={`/projects/${projectId}/ai/compliance`}
+        initial={project.ai?.compliance}
+        onGenerated={(d) => setProject?.((p) => ({ ...p, ai: { ...(p.ai || {}), compliance: d } }))}
+        readOnly={readOnly}
+        testid="ai-compliance"
+        emptyHint="Turn the pass/fail table above into a plain-language review with specific fixes for each violation."
+      />
     </div>
   );
 }

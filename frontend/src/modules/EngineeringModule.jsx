@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, BookOpen, CheckCircle2, Search, XCircle } from "lucide-react";
-import { api, apiError } from "@/lib/api";
-import { ClauseChip, LibraryContext } from "@/components/Clause";
-import { Metric, NumField, Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Progress } from "@/components/ui/progress";
-import { num } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { ClauseChip, LibraryContext } from "../components/Clause";
+import { Metric, NumField, Section } from "../components/Field";
+import { AiPanel } from "../components/AiPanel";
+import UtilitiesModule from "./UtilitiesModule";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Switch } from "../components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Progress } from "../components/ui/progress";
+import { num } from "../lib/format";
 
 const TABS = [
   ["loads", "1 · Structural Loads"],
@@ -26,6 +28,10 @@ const TABS = [
   ["library", "10 · IS Code Library"],
   ["green", "11 · Green Rating"],
   ["grid", "12 · Column Grid"],
+  // Utilities sizes the same water, tank, STP and RWH figures the water and storm modules
+  // above compute. Keeping it in a separate sidebar entry is what once let the two show
+  // different sump sizes for one project, so it belongs in this tab strip.
+  ["utilities", "13 · Utilities Sizing"],
 ];
 
 const INPUTS = {
@@ -154,7 +160,7 @@ const CodeLibrary = ({ query, setQuery, focusId, clearFocus }) => {
   );
 };
 
-export default function EngineeringModule({ project, update, readOnly }) {
+export default function EngineeringModule({ project, analysis, update, readOnly, projectId, setProject }) {
   const [eng, setEng] = useState(null);
   const [tab, setTab] = useState("loads");
   const [libQuery, setLibQuery] = useState("");
@@ -363,7 +369,9 @@ export default function EngineeringModule({ project, update, readOnly }) {
           ))}
         </div>
 
-        {tab === "library" ? (
+        {tab === "utilities" ? (
+          <UtilitiesModule project={project} analysis={analysis} update={update} readOnly={readOnly} />
+        ) : tab === "library" ? (
           <Section title="IS / NBC Code Reference Library" description="Every calculated value in the app links here"
             testid="eng-panel-library">
             <CodeLibrary query={libQuery} setQuery={setLibQuery} focusId={libFocus} clearFocus={() => setLibFocus("")} />
@@ -640,6 +648,19 @@ export default function EngineeringModule({ project, update, readOnly }) {
             </Button>
           </DialogContent>
         </Dialog>
+
+        {tab !== "library" && (
+          <AiPanel
+            title="AI engineering explainer"
+            description="Translates the IS/NBC results above into plain engineering language and names what governs each one"
+            endpoint={`/projects/${projectId}/ai/engineering`}
+            initial={project?.ai?.engineering}
+            onGenerated={(d) => setProject?.((p) => ({ ...p, ai: { ...(p.ai || {}), engineering: d } }))}
+            readOnly={readOnly}
+            testid="ai-engineering"
+            emptyHint="Explain what the base shear, column sizing, foundation and mix-design results mean, and what to verify before detailing."
+          />
+        )}
       </div>
     </LibraryContext.Provider>
   );

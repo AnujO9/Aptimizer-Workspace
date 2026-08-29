@@ -3,21 +3,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The app-wide kinetic grid (AppBackground) replaces the old static blue
+   grid as the background. html carries the base colour so overscroll
+   matches; body must stay transparent or it would paint over the canvas. */
+html {
+    background-color: #ffffff;
+}
+
 body {
     margin: 0;
     font-family: "Work Sans", Inter, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     color: #0f172a;
-    background-color: #eef3fb;
-    background-image:
-        linear-gradient(rgba(37, 99, 235, 0.06) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(37, 99, 235, 0.06) 1px, transparent 1px),
-        linear-gradient(rgba(37, 99, 235, 0.1) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(37, 99, 235, 0.1) 1px, transparent 1px);
-    background-size: 16px 16px, 16px 16px, 80px 80px, 80px 80px;
-    background-position: -1px -1px, -1px -1px, -1px -1px, -1px -1px;
-    background-attachment: fixed;
+    background-color: transparent;
 }
 
 @layer base {

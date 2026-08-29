@@ -1,6 +1,6 @@
-import { Metric, NumField, Section } from "@/components/Field";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { int, num } from "@/lib/format";
+import { Metric, NumField, Section } from "../components/Field";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { int, num } from "../lib/format";
 
 export default function CalculationsModule({ project, analysis, update, readOnly }) {
   const a = analysis?.areas;

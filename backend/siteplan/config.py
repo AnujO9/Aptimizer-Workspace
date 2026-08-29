@@ -87,11 +87,22 @@ class AmenityConfig:
 
 @dataclass
 class TowerConfig:
-    """Search space for tower footprints during packing."""
-    candidate_widths: List[float] = field(default_factory=lambda: [18.0, 21.0, 24.0, 28.0, 32.0])
-    candidate_depths: List[float] = field(default_factory=lambda: [15.0, 18.0, 21.0, 24.0])
+    """Search space for tower footprints during packing.
+
+    Residential blocks are slabs, not cubes: a real apartment building is a long bar one
+    or two units deep so every flat gets a facade for light and cross ventilation. Square
+    footprints land habitable rooms in the middle of the plate with no external wall, and
+    they are what made the generated site read as a cluster of office boxes rather than a
+    housing scheme. The aspect band below enforces the bar proportion.
+    """
+    candidate_widths: List[float] = field(default_factory=lambda: [36.0, 45.0, 54.0, 63.0, 72.0])
+    candidate_depths: List[float] = field(default_factory=lambda: [13.0, 15.0, 17.0, 19.0])
     rotations_deg: List[float] = field(default_factory=lambda: [0.0, 15.0, 30.0, 45.0, 60.0, 75.0])
-    min_footprint: float = 250.0
+    # Long side : short side. Below ~2 the block stops reading as a residential bar;
+    # above ~6 the corridor runs get impractical and the plate is hard to serve from one core.
+    min_aspect: float = 2.2
+    max_aspect: float = 5.5
+    min_footprint: float = 400.0
     max_footprint: float = 1400.0
     floors_min: int = 4
     floors_max: int = 24
@@ -106,6 +117,29 @@ class TowerConfig:
     spacing_height_factor: float = 0.5
     carpet_efficiency: float = 0.78  # footprint -> saleable carpet, for unit counting
     area_per_unit: float = 95.0      # mean carpet area per dwelling unit
+
+
+@dataclass
+class SurfaceParkingConfig:
+    """Perpendicular (90-degree) surface bays flanking the drives — SP:21 dimensions."""
+    enabled: bool = True
+    stall_width: float = 2.5
+    stall_depth: float = 5.0
+    kerb_offset: float = 0.3     # gap between the carriageway edge and the stall nose
+
+
+@dataclass
+class OpenSpaceConfig:
+    """Landscaped open space kept out of the packable region.
+
+    A community green is what stops a scheme reading as buildings-and-tarmac. It is
+    reserved before tower packing so it survives, rather than being whatever land the
+    packer failed to use.
+    """
+    enabled: bool = True
+    green_pct_of_plot: float = 8.0   # target size of the central green
+    min_area: float = 150.0          # below this a green is not worth reserving
+    clearance: float = 3.0
 
 
 @dataclass
@@ -125,6 +159,8 @@ class SiteLayoutConfig:
     road: RoadConfig = field(default_factory=RoadConfig)
     amenities: AmenityConfig = field(default_factory=AmenityConfig)
     towers: TowerConfig = field(default_factory=TowerConfig)
+    parking: SurfaceParkingConfig = field(default_factory=SurfaceParkingConfig)
+    open_space: OpenSpaceConfig = field(default_factory=OpenSpaceConfig)
     ga: GaConfig = field(default_factory=GaConfig)
 
     far_cap: float = 3.0
@@ -146,6 +182,8 @@ class SiteLayoutConfig:
         "road": RoadConfig,
         "amenities": AmenityConfig,
         "towers": TowerConfig,
+        "parking": SurfaceParkingConfig,
+        "open_space": OpenSpaceConfig,
         "ga": GaConfig,
     }
 

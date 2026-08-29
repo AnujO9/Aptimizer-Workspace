@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import axios from "axios";
-import { CheckCircle2, Ruler, XCircle } from "lucide-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { dt, int, num } from "@/lib/format";
+import { CheckCircle2, XCircle } from "lucide-react";
+import { BrandMark } from "../components/Brand";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { dt, int, num } from "../lib/format";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -43,7 +44,7 @@ export default function PublicCompliance() {
       <main className="max-w-4xl mx-auto space-y-6">
         <header className="border border-slate-200 bg-white rounded-sm p-6">
           <div className="flex items-center gap-2 text-blue-600 text-xs font-mono uppercase tracking-widest">
-            <Ruler className="h-3.5 w-3.5" /> Aptimizer · read-only compliance sheet
+            <BrandMark className="h-5 w-auto" /> Aptimizer · read-only compliance sheet
           </div>
           <h1 className="text-3xl font-semibold tracking-tight mt-2" data-testid="public-project-name">{project.name}</h1>
           <p className="text-sm text-slate-500 mt-1">

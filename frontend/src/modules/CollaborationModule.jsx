@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { History, RotateCcw, Save, Trash2, UserPlus } from "lucide-react";
-import { api, apiError } from "@/lib/api";
-import { Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { dt, num } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { Section } from "../components/Field";
+import { AiPanel } from "../components/AiPanel";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { dt, num } from "../lib/format";
 
 export default function CollaborationModule({ projectId, setProject, readOnly }) {
   const [versions, setVersions] = useState([]);
@@ -250,6 +251,21 @@ export default function CollaborationModule({ projectId, setProject, readOnly })
               })}
             </TableBody>
           </Table>
+        )}
+
+        {compareResult && (
+          <div className="mt-4">
+            <AiPanel
+              title="AI comparison"
+              description="Explains what the differences above mean in practice and which scheme is the stronger choice"
+              endpoint={`/projects/${projectId}/ai/compare?a=${encodeURIComponent(schemeA)}&b=${encodeURIComponent(schemeB)}`}
+              method="get"
+              readOnly={readOnly}
+              testid="ai-compare"
+              buttonLabel="Explain the difference"
+              emptyHint="Turn the metric table above into a recommendation, with the trade-offs each scheme is making."
+            />
+          </div>
         )}
       </Section>
 

@@ -6,6 +6,8 @@ missing inputs instead of failing silently.
 """
 import math
 
+import engine as enginelib
+import takeoff as takeofflib
 import iscodes as C
 import layout as layoutlib
 
@@ -38,6 +40,12 @@ DEFAULT_ENGINEERING = {
     "beam_span_m": 5.0,
     "beam_support": "simply supported",
     "concrete_grade": 25,
+    "steel_grade": 415,
+    "column_steel_pct": 1.0,
+    "unsupported_length_m": 0,      # 0 -> derived from floor height
+    "frame_type": "brick_infill",   # governs the IS 1893 Cl. 7.6.2 period formula
+    "wind_k1": 1.0,                 # IS 875-3 Table 1, risk / design life
+    "wind_k3": 1.0,                 # IS 875-3 Cl. 6.3.3, topography
     "aggregate_size_mm": 20,
     "cement_type": "OPC 53",
     "concrete_volume_cum": 0,
@@ -47,6 +55,8 @@ DEFAULT_ENGINEERING = {
     "aisle_width_m": 6.0,
     "two_wheeler_provided": 0,
     "refuge_floors_provided": 0,
+    "extinguishers_per_floor": 0,
+    "rwh_provided": True,
     "fire_lift_car_m": [1.2, 2.2],
     "stair_pressurisation": True,
     "pedestrian_ramp_slope": 12.0,
@@ -110,27 +120,49 @@ def m1_structural_loads(project, base, e, city):
     floors = max(int(b["floors"]), 1)
     column_load = round(factored * trib * floors, 1)
 
-    fck, fy, p = 25.0, 415.0, 0.01
+    # Grades come from the project, not a fixed M25/Fe415 — picking M40 in the mix design
+    # module used to leave the column sized as if it were still M25.
+    fck = float(e["concrete_grade"])
+    fy = float(e["steel_grade"])
+    p = max(float(e["column_steel_pct"]), 0.8) / 100.0     # IS 456 Cl. 26.5.3.1 minimum
     capacity_per_sqmm = 0.4 * fck + (0.67 * fy - 0.4 * fck) * p
-    req_area = column_load * 1000.0 / capacity_per_sqmm
-    side = math.sqrt(req_area)
-    side = max(math.ceil(side / 25.0) * 25.0, 230.0)
-    col_b = 230.0 if side <= 300 else round(side * 0.65 / 25) * 25
-    col_b = max(col_b, 230.0)
-    col_d = max(round(req_area / col_b / 25) * 25, 300.0)
+    # Sizing lives in `takeoff` and is imported rather than repeated here: the quantity
+    # take-off has to size the very same column, and two copies of a formula is how this
+    # codebase previously ended up with two different answers for one project.
+    req_area = takeofflib.column_required_area(column_load, fck, fy, float(e["column_steel_pct"]))
+    col_b, col_d = takeofflib.column_section(req_area)
+
+    # IS 456 Cl. 25.1.2 — Cl. 39.3 (the axial capacity expression used above) is only
+    # valid for a SHORT column carrying no more than the minimum eccentricity. Neither
+    # condition was previously checked, so a slender column could be sized by a formula
+    # that does not apply to it.
+    unsupported = float(e["unsupported_length_m"]) or max(float(b["floor_height"]) - 0.6, 2.0)
+    least_dim = min(col_b, col_d)
+    slenderness = round(unsupported * 1000.0 / least_dim, 2)
+    is_short = slenderness < 12.0
+    e_min = max(unsupported * 1000.0 / 500.0 + col_d / 30.0, 20.0)
+    ecc_ok = e_min <= 0.05 * col_d
 
     span = float(e["beam_span_m"])
-    divisor = 12.0 if e["beam_support"] == "simply supported" else 15.0
-    beam_d = max(math.ceil(span * 1000 / divisor / 25) * 25, 300)
-    beam_w = max(round(beam_d / 2 / 25) * 25, 230)
+    beam_w, beam_d = takeofflib.beam_section(span, e["beam_support"])
 
     vb = city["wind_speed"]
     k2 = next((v for h, v in C.WIND_K2 if b["height_m"] <= h), C.WIND_K2[-1][1])
-    vz = vb * 1.0 * k2 * 1.0
+    k1 = float(e["wind_k1"])
+    k3 = float(e["wind_k3"])
+    vz = vb * k1 * k2 * k3
     pz = round(0.6 * vz ** 2 / 1000.0, 3)  # kN/m²
     pd = round(pz * C.WIND_KD * C.WIND_KA * C.WIND_KC, 3)
+
+    # IS 875-3 Cl. 7.4: F = Cf x Ae x pd. Cf was previously omitted, which is the same as
+    # taking it as 1.0 and under-states the lateral force by 20-40%.
     face_width = math.sqrt(max(b["footprint"], 1)) if b["footprint"] else 0
-    wind_force = round(pd * face_width * b["height_m"], 1)
+    along_wind = face_width                       # square-plan assumption from footprint
+    a_over_b = (along_wind / face_width) if face_width else 1.0
+    h_over_b = (b["height_m"] / face_width) if face_width else 1.0
+    cf = C.wind_force_coefficient(a_over_b, h_over_b)
+    area_eff = face_width * b["height_m"]
+    wind_force = round(cf * area_eff * pd, 1)
 
     bay = max(float(e["grid_bay_x_m"]), float(e["grid_bay_y_m"]))
     if floors > 12 or b["height_m"] > 40:
@@ -140,9 +172,29 @@ def m1_structural_loads(project, base, e, city):
     else:
         system = "Conventional RCC beam–slab frame"
 
+    warnings = []
+    if not is_short:
+        warnings.append({"severity": "critical",
+                         "text": f"Slenderness ratio {slenderness} exceeds 12, so this is a SLENDER column. "
+                                 "The IS 456 Cl. 39.3 short-column expression used to size it does not apply — "
+                                 "additional moments per Cl. 39.7 are required.",
+                         "clause": C.clause("column_slender")})
+    if not ecc_ok:
+        warnings.append({"severity": "critical",
+                         "text": f"Minimum eccentricity {e_min:.1f} mm exceeds 0.05D ({0.05 * col_d:.1f} mm). "
+                                 "Cl. 39.3 is not valid here; the column must be designed for combined "
+                                 "axial load and moment.",
+                         "clause": C.clause("column_ecc")})
+    if not C.WIND_CF_VERIFIED:
+        warnings.append({"severity": "warning",
+                         "text": "The wind force coefficient table has not been verified against a "
+                                 "controlled copy of IS 875 (Part 3) Table 26. Confirm Cf before using "
+                                 "the lateral force for anything beyond feasibility.",
+                         "clause": C.clause("wind_force")})
+
     return {
         "id": "loads", "title": "Structural Load Estimator", "codes": ["IS 875 Parts 1–3", "IS 456:2000"],
-        "missing": missing,
+        "missing": missing, "warnings": warnings,
         "outputs": [
             out("Slab self-weight", round(slab, 2), "kN/m²", "dead_load", f"25 kN/m³ × {e['slab_thickness_mm']} mm slab"),
             out("Wall load on slab", wall_load, "kN/m²", "dead_load", f"{wall_uw} kN/m³ × {e['wall_thickness_mm']} mm × {round(wall_h,2)} m"),
@@ -154,13 +206,24 @@ def m1_structural_loads(project, base, e, city):
             out("Factored load (1.5 DL + 1.5 LL)", factored, "kN/m²", "load_combo"),
             out("Tributary area per column", round(trib, 2), "m²", "column_design", f"{e['grid_bay_x_m']} × {e['grid_bay_y_m']} m bay"),
             out("Factored axial load per column", column_load, "kN", "column_design", f"over {floors} floors"),
-            out("Recommended column size", f"{int(col_b)} × {int(col_d)}", "mm", "column_design", "1% steel, M25/Fe415"),
-            out("Preliminary beam size", f"{int(beam_w)} × {int(beam_d)}", "mm", "beam_depth", f"L/{int(divisor)} for {span} m span"),
+            out("Recommended column size", f"{int(col_b)} × {int(col_d)}", "mm", "column_design",
+                f"{p * 100:g}% steel, M{int(fck)}/Fe{int(fy)}"),
+            out("Slenderness ratio (least dimension)", slenderness, "", "column_slender",
+                f"unsupported length {unsupported:.2f} m ÷ {int(min(col_b, col_d))} mm"),
+            out("Minimum eccentricity e_min", round(e_min, 1), "mm", "column_ecc",
+                f"limit for Cl. 39.3 to apply is 0.05D = {round(0.05 * col_d, 1)} mm"),
+            out("Preliminary beam size", f"{int(beam_w)} × {int(beam_d)}", "mm", "beam_depth", f"L/{12 if e['beam_support'] == 'simply supported' else 15} for {span} m span"),
             out("Basic wind speed Vb", vb, "m/s", "wind_speed", f"{city['city']} ({city['source']} data)"),
             out("Terrain / height factor k2", k2, "", "wind_k2", f"at {b['height_m']} m height"),
             out("Design wind pressure pz", pz, "kN/m²", "wind_pressure"),
             out("Design pressure pd (Kd·Ka·Kc)", pd, "kN/m²", "wind_pressure"),
-            out("Lateral wind force on face", wind_force, "kN", "wind_pressure", f"{round(face_width,1)} m wide × {b['height_m']} m tall"),
+            out("Force coefficient Cf", cf, "", "wind_force",
+                f"a/b {a_over_b:.2f}, h/b {h_over_b:.2f}"
+                + ("" if C.WIND_CF_VERIFIED else " — TABLE NOT YET VERIFIED against IS 875-3 Table 26")),
+            out("Effective frontal area Ae", round(area_eff, 1), "m²", "wind_force",
+                f"{round(face_width,1)} m wide × {b['height_m']} m tall"),
+            out("Lateral wind force F = Cf·Ae·pd", wind_force, "kN", "wind_force",
+                f"Cf {cf} applied — previously omitted, which under-stated this force"),
         ],
         "recommendation": {"label": "Suggested structural system", "value": system,
                            "clause": C.clause("flat_slab")},
@@ -170,13 +233,9 @@ def m1_structural_loads(project, base, e, city):
     }
 
 
-def _column_size(load_kn):
-    fck, fy, p = 25.0, 415.0, 0.01
-    cap = 0.4 * fck + (0.67 * fy - 0.4 * fck) * p
-    req = load_kn * 1000.0 / cap
-    side = max(math.ceil(math.sqrt(req) / 25.0) * 25.0, 230.0)
-    cb = max(230.0 if side <= 300 else round(side * 0.65 / 25) * 25, 230.0)
-    cd = max(round(req / cb / 25) * 25, 300.0)
+def _column_size(load_kn, fck=25.0, fy=415.0, steel_pct=1.0):
+    cb, cd = takeofflib.column_section(
+        takeofflib.column_required_area(load_kn, fck, fy, steel_pct))
     return f"{int(cb)} × {int(cd)}"
 
 
@@ -187,12 +246,16 @@ def _tower_loads(t, e, city, factored, trib, dead, live, pd):
     k2 = next((v for h, v in C.WIND_K2 if t["height_m"] <= h), C.WIND_K2[-1][1])
     pd_t = round(0.6 * (city["wind_speed"] * k2) ** 2 / 1000.0 * C.WIND_KD * C.WIND_KA * C.WIND_KC, 3)
     face = math.sqrt(max(t["footprint_sqm"], 1)) if t["footprint_sqm"] else 0
+    cf_t = C.wind_force_coefficient(1.0, (t["height_m"] / face) if face else 1.0)
     return {
         "id": t["id"], "name": t["name"], "floors": floors, "height_m": t["height_m"],
         "footprint_sqm": t["footprint_sqm"], "builtup_sqm": t["builtup_sqm"],
-        "column_load_kn": col, "column_size_mm": _column_size(col),
+        "column_load_kn": col,
+        "column_size_mm": _column_size(col, float(e["concrete_grade"]), float(e["steel_grade"]),
+                                       float(e["column_steel_pct"])),
         "k2": k2, "design_pressure_kn_sqm": pd_t,
-        "wind_force_kn": round(pd_t * face * t["height_m"], 1),
+        "cf": cf_t,
+        "wind_force_kn": round(cf_t * face * t["height_m"] * pd_t, 1),
     }
 
 
@@ -204,7 +267,11 @@ def m2_seismic(project, base, e, city, loads):
     soil = e["soil_type"]
     soil_type = C.SOIL_SEISMIC_TYPE.get(soil, "II")
     h = max(b["height_m"], 3.0)
-    ta = round(0.075 * h ** 0.75, 3)
+    frame_type = e["frame_type"] if e["frame_type"] in C.SEISMIC_FRAME_TYPES else C.DEFAULT_FRAME_TYPE
+    base_dim = math.sqrt(max(b["footprint"], 1.0)) if b["footprint"] else 0.0
+    ta_raw, ta_formula = C.seismic_period(h, base_dim, frame_type)
+    ta = round(ta_raw, 3)
+    ta_bare = round(0.075 * h ** 0.75, 3)
 
     def sa_g(T, st):
         if st == "I":
@@ -252,7 +319,10 @@ def m2_seismic(project, base, e, city, loads):
             out("Seismic zone", zone, "", "seismic_zone", f"{city['city']}, {city['state']} ({city['source']} data)"),
             out("Zone factor Z", z, "", "seismic_zone"),
             out("Soil / site type", f"Type {soil_type} — {C.SOILS.get(soil, {}).get('label', soil)}", "", "seismic_sa"),
-            out("Fundamental period Ta", ta, "s", "seismic_period", "0.075 h^0.75 (RC frame)"),
+            out("Fundamental period Ta", ta, "s", "seismic_period", ta_formula),
+            out("Frame type", C.SEISMIC_FRAME_TYPES[frame_type], "", "seismic_period",
+                (f"bare-frame period would be {ta_bare} s — using it on an infilled frame "
+                 "under-states base shear") if frame_type != "bare_frame" else ""),
             out("Spectral acceleration Sa/g", sa, "", "seismic_sa"),
             out("Response reduction R", r, "", "seismic_R", e["structural_system"]),
             out("Importance factor I", imp, "", "seismic_I", e["importance"]),
@@ -262,14 +332,16 @@ def m2_seismic(project, base, e, city, loads):
             out("Base shear as % of W", round(ah * 100, 2), "%", "base_shear"),
         ],
         "recommendation": {"label": "Recommended lateral system", "value": system, "clause": C.clause("seismic_R")},
-        "per_tower": [_tower_seismic(t, z, soil_type, r, imp, sa_g, loads) for t in b["towers"]],
+        "per_tower": [_tower_seismic(t, z, soil_type, r, imp, sa_g, loads, frame_type)
+                      for t in b["towers"]],
         "derived": {"base_shear": v, "ah": ah, "seismic_weight": w},
     }
 
 
-def _tower_seismic(t, z, soil_type, r, imp, sa_g, loads):
+def _tower_seismic(t, z, soil_type, r, imp, sa_g, loads, frame_type="brick_infill"):
     h = max(t["height_m"], 3.0)
-    ta = round(0.075 * h ** 0.75, 3)
+    base_dim = math.sqrt(max(t["footprint_sqm"], 1.0)) if t["footprint_sqm"] else 0.0
+    ta = round(C.seismic_period(h, base_dim, frame_type)[0], 3)
     sa = round(sa_g(ta, soil_type), 3)
     ah = round(z * imp * sa / (2 * r), 5)
     w = round((loads["derived"]["dead"] + 0.25 * loads["derived"]["live"]) * t["builtup_sqm"], 1)
@@ -304,7 +376,12 @@ def m3_foundation(project, base, e, loads):
     else:
         ftype = "Pile foundation with pile cap"
 
-    applied = round(service_load / max(req_area, 0.01), 1) if req_area else 0
+    # Bearing pressure must be measured against the footing actually provided, not the
+    # exact required area — service_load / (service_load / sbc) is identically the SBC, so
+    # the old output could never differ from it and the "vs SBC" comparison said nothing.
+    provided_area = round(footing_side ** 2, 2) if footing_side else 0.0
+    applied = round(service_load / provided_area, 1) if provided_area else 0
+    utilisation = round(applied / sbc * 100, 1) if sbc else 0
     trib = float(e["grid_bay_x_m"]) * float(e["grid_bay_y_m"])
     warnings = []
     if req_area > 0.35 * trib:
@@ -335,7 +412,11 @@ def m3_foundation(project, base, e, loads):
             out("Column service load", round(service_load, 1), "kN", "found_type"),
             out("Required footing area", req_area, "m²", "found_type"),
             out("Isolated footing size", f"{footing_side} × {footing_side}", "m", "found_type"),
-            out("Applied bearing pressure", applied, "kN/m²", "sbc", f"vs SBC {sbc} kN/m²"),
+            out("Provided footing area", provided_area, "m²", "found_type", "size rounded up from the required area"),
+            out("Applied bearing pressure", applied, "kN/m²", "sbc",
+                f"service load ÷ provided footing area, vs SBC {sbc} kN/m²"),
+            out("Bearing capacity utilisation", utilisation, "%", "sbc",
+                "applied pressure as a share of the safe bearing capacity"),
         ],
         "recommendation": {"label": "Recommended foundation type", "value": ftype, "clause": C.clause("found_type")},
     }
@@ -347,20 +428,15 @@ def m4_mix_design(project, base, e):
     exposure = C.EXPOSURE.get(e["exposure_condition"], C.EXPOSURE["moderate"])
     agg = int(e["aggregate_size_mm"])
     s = C.MIX_STD_DEV.get(grade, 5.0)
-    target = round(grade + 1.65 * s, 2)
-    wc = exposure["max_wc"]
-    water = C.MIX_WATER.get(agg, 186)
-    cement = max(round(water / wc, 1), exposure["min_cement"])
-    if cement > water / wc:
-        wc = round(water / cement, 3)
-    ca_vol = C.MIX_CA_VOLUME.get(agg, 0.62)
-    ca_vol = round(ca_vol + 0.01 * ((0.50 - wc) / 0.05), 3)
-    fa_vol = round(1 - ca_vol, 3)
-
-    air = 0.02 if agg == 10 else 0.01
-    vol_agg = 1 - air - (cement / (C.SG["cement"] * 1000)) - (water / 1000.0)
-    coarse = round(vol_agg * ca_vol * C.SG["coarse"] * 1000, 1)
-    fine = round(vol_agg * fa_vol * C.SG["fine"] * 1000, 1)
+    # Proportioning is shared with the quantity take-off, which needs cement, sand and
+    # aggregate per m3 for the very same grade.
+    mix = takeofflib.mix_proportions(grade, e["exposure_condition"], agg)
+    target = mix["target_strength"]
+    wc = mix["wc_ratio"]
+    water = mix["water_l"]
+    cement = mix["cement_kg"]
+    coarse = mix["coarse_kg"]
+    fine = mix["fine_kg"]
     ratio_fine = round(fine / cement, 2)
     ratio_coarse = round(coarse / cement, 2)
     volume = float(e["concrete_volume_cum"]) or base["quantities"]["items"][0]["quantity"]
@@ -385,7 +461,7 @@ def m4_mix_design(project, base, e):
             out("Free water-cement ratio", wc, "", "mix_wc"),
             out("Water content", water, "litre/m³", "mix_water", f"{agg} mm aggregate, 25–50 mm slump"),
             out("Cement content", cement, "kg/m³", "mix_cement", e["cement_type"]),
-            out("Coarse aggregate volume fraction", ca_vol, "", "mix_ca"),
+            out("Coarse aggregate volume fraction", mix["ca_volume_fraction"], "", "mix_ca"),
             out("Fine aggregate", fine, "kg/m³", "mix_ca"),
             out("Coarse aggregate", coarse, "kg/m³", "mix_ca"),
             out("Mix proportion (by weight)", f"1 : {ratio_fine} : {ratio_coarse}", "", "mix_target"),
@@ -400,12 +476,14 @@ def m4_mix_design(project, base, e):
 # ================================================================ 5. water
 def m5_water(project, base, e):
     b = _building(project, base)
-    persons = b["units"] * int(e["occupancy_per_unit"])
     missing = [] if b["units"] else ["Unit count (Apartment Planning)"]
-    dom = persons * C.WATER_LPCD["domestic"]
-    flush = persons * C.WATER_LPCD["flushing"]
-    ext = persons * C.WATER_LPCD["external"]
-    total = dom + flush + ext
+
+    # Shared with the Utilities module (engine.water_demand) so the two panels can no
+    # longer disagree on daily demand, sump size or STP capacity for the same project.
+    w = enginelib.water_demand(project, base["areas"])
+    persons = w["persons"]
+    dom, flush, ext = w["domestic_lpd"], w["flushing_lpd"], w["external_lpd"]
+    total = w["total_lpd"]
 
     tall = b["height_m"] > 15
     fire_reserve = C.FIRE_RESERVE_IN_SUMP_L if tall else 0
@@ -420,7 +498,7 @@ def m5_water(project, base, e):
     tanks = max(int(e["oht_tanks"]), 2)
     per_tank = oht_l / tanks
 
-    sewage = total * C.SEWAGE_FACTOR
+    sewage = w["sewage_lpd"]
     stp_kld = round(sewage / 1000.0, 2)
     stp_type = next(label for cap, label in C.STP_TYPES if stp_kld <= cap)
 
@@ -428,7 +506,7 @@ def m5_water(project, base, e):
         "id": "water", "title": "Water Infrastructure", "codes": ["IS 1172:1993", "NBC 2016 Part 9", "NBC 2016 Part 4"],
         "missing": missing,
         "outputs": [
-            out("Population", persons, "persons", "water_demand", f"{b['units']} units × {e['occupancy_per_unit']}"),
+            out("Population", persons, "persons", "water_demand", "per-unit-type occupancy from Apartment Planning"),
             out("Domestic demand @135 lpcd", round(dom), "litre/day", "water_demand"),
             out("Flushing demand @45 lpcd", round(flush), "litre/day", "water_demand"),
             out("External / gardening @15 lpcd", round(ext), "litre/day", "water_demand"),
@@ -475,10 +553,17 @@ def m6_storm_rwh(project, base, e, city):
 
     checks = [
         check("Self-cleansing velocity 0.6–3.0 m/s", 0.6 <= velocity <= 3.0, f"{velocity} m/s", "0.6–3.0 m/s", "storm_pipe"),
-        check("Rainwater harvesting provided", mandatory, f"plot {round(plot)} m²",
-              f"mandatory above {C.RWH_MANDATORY_PLOT_SQM} m²", "rwh",
-              "RWH is mandatory for this plot size — recharge pit / storage sized below" if mandatory
-              else "Not mandatory at this plot size, still recommended"),
+        # The check is "is RWH provided", not "is it mandatory" — scoring a compliant
+        # small plot as a red failure because the rule does not bite is backwards.
+        check("Rainwater harvesting provided",
+              bool(e["rwh_provided"]) if mandatory else True,
+              "provided" if e["rwh_provided"] else "not provided",
+              f"mandatory above {C.RWH_MANDATORY_PLOT_SQM} m²" if mandatory else "not applicable",
+              "rwh",
+              (f"Plot is {round(plot)} m² — RWH is mandatory; recharge pit sized below"
+               if mandatory else
+               f"Plot is {round(plot)} m², below the {C.RWH_MANDATORY_PLOT_SQM} m² threshold — "
+               "not mandatory, still recommended")),
     ]
 
     return {
@@ -505,13 +590,29 @@ def m6_storm_rwh(project, base, e, city):
 
 
 # ================================================================ 7. parking (NBC)
+def _ecs_required(b):
+    """ECS demand — one definition, used by the Parking and Accessibility modules alike."""
+    return math.ceil(b["super_builtup"] / C.PARKING["ecs_per_sqm"]) if b["super_builtup"] else 0
+
+
+def _accessible_bays_required(b):
+    """Accessible bays (1 per 50 ECS).
+
+    Previously the Parking module derived this from the NBC ECS demand while the
+    Accessibility module derived it from engine's own `parking.required_slots`, so the
+    same project could be told it needed two different numbers of accessible bays.
+    """
+    ecs = _ecs_required(b)
+    return math.ceil(ecs / C.PARKING["accessible_per"]) if ecs else 0
+
+
 def m7_parking_nbc(project, base, e):
     b = _building(project, base)
     p = project.get("parking") or {}
     ramp = p.get("ramp") or {}
-    ecs_required = math.ceil(b["super_builtup"] / C.PARKING["ecs_per_sqm"]) if b["super_builtup"] else 0
+    ecs_required = _ecs_required(b)
     provided = base["parking"]["provided_slots"]
-    accessible_req = math.ceil(ecs_required / C.PARKING["accessible_per"]) if ecs_required else 0
+    accessible_req = _accessible_bays_required(b)
     ev_req = math.ceil(ecs_required * C.PARKING["ev_pct"] / 100.0)
     tw_required = math.ceil(b["units"] * 0.5)
     tw_ecs_equivalent = round(tw_required / C.PARKING["two_wheeler_per_ecs"], 1)
@@ -578,8 +679,11 @@ def m8_fire(project, base, e):
     ext_per_floor = math.ceil(plate / C.FIRE["extinguisher_per_sqm"]) if plate else 0
 
     checks = [
-        check("Travel distance to nearest exit ≤ 22.5 m", travel <= C.FIRE["max_travel_m"] and travel > 0,
-              f"{travel} m", "≤ 22.5 m", "fire_travel"),
+        # Label and threshold both derive from the constant — a hardcoded "22.5 m" in the
+        # label survived the constant changing to 30 m and told the user the wrong rule.
+        check(f"Travel distance to nearest exit ≤ {C.FIRE['max_travel_m']:g} m",
+              travel <= C.FIRE["max_travel_m"] and travel > 0,
+              f"{travel} m", f"≤ {C.FIRE['max_travel_m']:g} m", "fire_travel"),
         check("Minimum 2 staircases above 24 m", (stair_count >= 2) if need_two_stairs else stair_count >= 1,
               stair_count, "≥ 2" if need_two_stairs else "≥ 1", "fire_stairs",
               f"building height {h} m"),
@@ -597,9 +701,14 @@ def m8_fire(project, base, e):
         check("Stairwell pressurisation above 15 m", bool(e["stair_pressurisation"]) if need_press else True,
               "provided" if e["stair_pressurisation"] else "not provided",
               "required" if need_press else "not applicable", "fire_press"),
-        check("Fire extinguishers 1 per 200 m² per floor", ext_per_floor >= 1 if plate else False,
-              f"{ext_per_floor} per floor", "≥ 1 per 200 m²", "fire_ext",
-              f"floor plate {round(plate,1)} m²"),
+        # ceil(plate/200) >= 1 is true for any positive plate, so the old form was a free
+        # pass that inflated the fire score. Compare what is provided against what is
+        # required instead.
+        check("Fire extinguishers 1 per 200 m² per floor",
+              int(e["extinguishers_per_floor"]) >= ext_per_floor if plate else False,
+              f"{e['extinguishers_per_floor']} provided per floor",
+              f"{ext_per_floor} required per floor", "fire_ext",
+              f"floor plate {round(plate,1)} m² at 1 per {int(C.FIRE['extinguisher_per_sqm'])} m²"),
     ]
     passed = sum(1 for c in checks if c["status"] == "pass")
 
@@ -657,10 +766,12 @@ def m9_accessibility(project, base, e):
               "provided" if e["dual_handrails"] else "not provided", "required", "acc_handrail"),
         check("Tactile guiding path entrance → lift", bool(e["tactile_path"]),
               "provided" if e["tactile_path"] else "not provided", "required", "acc_tactile"),
-        check("Accessible parking bays", int((project.get("parking") or {}).get("accessible_provided") or 0)
-              >= math.ceil(base["parking"]["required_slots"] / C.PARKING["accessible_per"]),
+        check("Accessible parking bays",
+              int((project.get("parking") or {}).get("accessible_provided") or 0)
+              >= _accessible_bays_required(b),
               (project.get("parking") or {}).get("accessible_provided") or 0,
-              math.ceil(base["parking"]["required_slots"] / C.PARKING["accessible_per"]), "parking_accessible"),
+              _accessible_bays_required(b), "parking_accessible",
+              "same 1-per-50-ECS basis as the Parking module"),
     ]
     passed = sum(1 for c in checks if c["status"] == "pass")
     return {

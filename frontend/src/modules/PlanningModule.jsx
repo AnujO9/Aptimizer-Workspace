@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
-import { api, apiError } from "@/lib/api";
-import { Metric, NumField, Section, TextField } from "@/components/Field";
-import { FloorPlate } from "@/components/FloorPlate";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Slider } from "@/components/ui/slider";
-import { int, num } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { Metric, NumField, Section, TextField } from "../components/Field";
+import { FloorPlate } from "../components/FloorPlate";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Slider } from "../components/ui/slider";
+import { int, num } from "../lib/format";
 
 const UNIT_TYPES = ["studio", "1bhk", "2bhk", "3bhk", "4bhk", "penthouse", "custom"];
 const ROOM_TYPES = ["living", "bedroom", "kitchen", "bathroom", "balcony", "utility", "closet", "entrance", "study", "common"];
@@ -67,7 +67,6 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
   useEffect(() => {
     if (!t) return;
     if (!t.floor_layouts?.[String(floor)]) fetchFloorLayout(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t?.id, floor]);
 
   if (!t) return <p className="text-sm text-slate-500">No towers defined. Add a tower to begin.</p>;

@@ -274,24 +274,26 @@ def test_spacing_fix_is_reported_in_warnings():
 
 # ---------------------------------------------------------------- tower cap
 def test_max_towers_caps_the_layout():
-    uncapped = run("rect")
-    capped = run("rect", towers={"max_towers": 4})
-    assert len(uncapped.towers) > 4
+    # Bar footprints are much larger than the old square ones, so fewer fit on `rect`.
+    # Use the bigger L-shape so the cap has something to actually bite on.
+    uncapped = run("L")
+    capped = run("L", towers={"max_towers": 4})
+    assert len(uncapped.towers) > 4, f"only {len(uncapped.towers)} bars fit — cap cannot bite"
     assert len(capped.towers) == 4
     assert any("Capped the layout at 4" in w for w in capped.warnings)
 
 
 def test_max_towers_keeps_the_highest_yield_towers():
-    capped = run("rect", towers={"max_towers": 3})
-    uncapped = run("rect")
+    capped = run("L", towers={"max_towers": 3})
+    uncapped = run("L")
     smallest_kept = min(t.floor_area for t in capped.towers)
     dropped = sorted(t.floor_area for t in uncapped.towers)[:len(uncapped.towers) - 3]
     assert all(d <= smallest_kept + 1e-6 for d in dropped)
 
 
 def test_max_towers_above_what_fits_changes_nothing():
-    a = run("rect")
-    b = run("rect", towers={"max_towers": 99})
+    a = run("L")
+    b = run("L", towers={"max_towers": 99})
     assert len(a.towers) == len(b.towers)
     assert not any("Capped" in w for w in b.warnings)
 
@@ -302,3 +304,71 @@ def test_max_towers_is_reflected_in_the_payload():
                      "towers": {"max_towers": 5}})
     assert out["layout_metrics"]["tower_count"] == 5
     assert out["config"]["towers"]["max_towers"] == 5
+
+
+# ---------------------------------------------------------------- bar typology
+def test_footprints_are_bars_not_boxes():
+    """Square plates leave habitable rooms with no external wall, and they are what made
+    the generated site read as office boxes rather than housing."""
+    cfg = conf()
+    for key in SHAPES:
+        r = run(key)
+        for t in r.towers:
+            aspect = max(t.width, t.depth) / min(t.width, t.depth)
+            assert cfg.towers.min_aspect <= aspect <= cfg.towers.max_aspect,                 f"{key}: {t.name} is {t.width} x {t.depth} (aspect {aspect:.1f})"
+
+
+def test_aspect_band_is_configurable():
+    r = run("L", towers={"min_aspect": 1.0, "max_aspect": 1.6,
+                         "candidate_widths": [24.0, 30.0], "candidate_depths": [20.0, 24.0],
+                         "min_footprint": 400.0})
+    assert r.towers
+    for t in r.towers:
+        assert max(t.width, t.depth) / min(t.width, t.depth) <= 1.6
+
+
+# ---------------------------------------------------------------- surface parking
+def test_surface_bays_are_generated_along_the_roads():
+    r = run("rect")
+    assert r.bays, "no surface parking generated"
+    roads = r.reservation.roads
+    for b in r.bays:
+        assert b.polygon.distance(roads) < 1.5, "a bay is stranded away from the carriageway"
+
+
+def test_surface_bays_never_overlap_buildings_or_each_other():
+    r = run("L")
+    blocks = [t.polygon for t in r.towers] + [a.polygon for a in r.reservation.amenities]
+    for b in r.bays:
+        for g in blocks:
+            assert b.polygon.intersection(g).area == pytest.approx(0.0, abs=1e-6)
+    for i, b in enumerate(r.bays):
+        for c in r.bays[i + 1:]:
+            assert b.polygon.intersection(c.polygon).area == pytest.approx(0.0, abs=1e-6)
+
+
+def test_bays_stay_inside_the_envelope():
+    r = run("irregular")
+    guard = r.reservation.envelope.envelope.buffer(1e-6)
+    for b in r.bays:
+        assert guard.contains(b.polygon)
+
+
+def test_bay_dimensions_match_the_config():
+    cfg = conf()
+    r = run("rect")
+    expected = cfg.parking.stall_width * cfg.parking.stall_depth
+    for b in r.bays[:20]:
+        assert b.polygon.area == pytest.approx(expected, rel=1e-6)
+
+
+def test_surface_parking_can_be_disabled():
+    r = run("rect", parking={"enabled": False})
+    assert r.bays == []
+
+
+def test_bay_count_is_reported_in_the_payload():
+    out = plan_site({"plot": {"coordinates": to_latlng(SHAPES["rect"])}},
+                    {"setbacks": {"default": 5}, "fast_preview": True})
+    assert out["layout_metrics"]["surface_bays"] == out["surface_parking"]["bay_count"] > 0
+    assert out["surface_parking"]["polygons"]

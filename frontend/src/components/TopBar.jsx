@@ -1,7 +1,8 @@
 import { Link, useNavigate } from "react-router-dom";
-import { Ruler, LogOut, User, Shield, LayoutGrid } from "lucide-react";
-import { useAuth } from "@/context/AuthContext";
-import { Button } from "@/components/ui/button";
+import { LogOut, User, Shield, LayoutGrid } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { Brand } from "./Brand";
+import { Button } from "../components/ui/button";
 
 export const TopBar = ({ children }) => {
   const { user, logout } = useAuth();
@@ -11,12 +12,7 @@ export const TopBar = ({ children }) => {
     <header className="border-b border-slate-200 bg-white" data-testid="top-bar">
       <div className="flex items-center gap-4 px-5 h-14">
         <Link to="/projects" className="flex items-center gap-2" data-testid="brand-link">
-          <div className="h-7 w-7 grid place-items-center bg-slate-900 rounded-sm">
-            <Ruler className="h-4 w-4 text-white" />
-          </div>
-          <span className="font-semibold tracking-tight text-[15px]">
-            Aptimizer<span className="text-blue-600">.</span>
-          </span>
+          <Brand markClass="h-8 w-auto" />
         </Link>
         <div className="flex-1 min-w-0">{children}</div>
         <nav className="flex items-center gap-1">

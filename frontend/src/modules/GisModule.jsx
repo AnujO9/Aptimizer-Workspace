@@ -2,15 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, RefreshCw, Sparkles, TriangleAlert, XCircle } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, apiError } from "@/lib/api";
-import { GisMap } from "@/components/GisMap";
-import { SunPathDiagram, WindRose } from "@/components/SiteDiagrams";
-import { Metric, Section } from "@/components/Field";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { dt, num } from "@/lib/format";
+import { api, apiError } from "../lib/api";
+import { GisMap } from "../components/GisMap";
+import { SunPathDiagram, WindRose } from "../components/SiteDiagrams";
+import { Metric, Section } from "../components/Field";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Progress } from "../components/ui/progress";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { dt, num } from "../lib/format";
 
 const Markdown = ({ text }) => (
   <div className="space-y-1.5 text-sm text-slate-700" data-testid="ai-summary-text">

@@ -1,23 +1,69 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Ruler, ArrowRight } from "lucide-react";
-import { useAuth } from "@/context/AuthContext";
-import { apiError } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { AlertCircle, ArrowLeft, ArrowRight, Eye, EyeOff, Loader, Lock, Mail } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { Brand } from "../components/Brand";
+import { useAuth } from "../context/AuthContext";
+import { apiError } from "../lib/api";
+import { Reveal, RevealItem, Stagger } from "../components/landing/Reveal";
+import {
+  AuthGlassStyles,
+  BlurFade,
+  GlassButton,
+  GlassInput,
+  GradientBackground,
+} from "../components/ui/sign-up";
+
+const PILLS = [
+  ["SITE INTELLIGENCE", "terrain · environment · suitability"],
+  ["DESIGN ENGINE", "layout · FAR/FSI · BOQ · cost"],
+  ["COMPLIANCE", "NBC / IS rule-based checks"],
+];
 
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [step, setStep] = useState("email");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const passwordInputRef = useRef(null);
+
+  const isEmailValid = /\S+@\S+\.\S+/.test(email);
+
+  // The password field mounts with the step, so the focus has to wait out the
+  // blur-fade before there is anything to focus.
+  useEffect(() => {
+    if (step !== "password") return undefined;
+    const id = setTimeout(() => passwordInputRef.current?.focus(), 400);
+    return () => clearTimeout(id);
+  }, [step]);
+
+  const goToPassword = () => {
+    if (!isEmailValid) return;
+    setError("");
+    setStep("password");
+  };
+
+  const goBack = () => {
+    setError("");
+    setPassword("");
+    setStep("email");
+  };
+
+  const handleEmailKeyDown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    goToPassword();
+  };
 
   const submit = async (e) => {
     e.preventDefault();
+    // Enter in the email field reaches the form too; there it means "advance".
+    if (step !== "password" || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -33,87 +79,275 @@ export default function Login() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-[1.1fr_0.9fr]">
-      <div className="hidden lg:block relative bg-slate-900">
-        <img
-          src="https://images.pexels.com/photos/4134179/pexels-photo-4134179.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
-          alt="Architectural blueprints"
-          className="absolute inset-0 h-full w-full object-cover opacity-35"
+      <div className="hidden lg:flex relative flex-col justify-between overflow-hidden bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 p-12">
+        {/* Ambient ring, decorative only. Static so it reads as texture, not motion. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-40 top-1/2 h-[36rem] w-[36rem] -translate-y-1/2 rounded-full border border-white/[0.08]"
         />
-        <div className="relative h-full flex flex-col justify-between p-12">
-          <div className="flex items-center gap-2 text-white">
-            <div className="h-8 w-8 grid place-items-center bg-blue-600 rounded-sm">
-              <Ruler className="h-4 w-4" />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-24 top-1/2 h-72 w-72 -translate-y-1/2 rounded-full border border-white/[0.06]"
+        />
+
+        <Reveal immediate>
+          <Brand light markClass="h-10 w-auto" wordClass="text-lg" />
+        </Reveal>
+
+        <div className="relative max-w-lg">
+          <Reveal immediate>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] uppercase tracking-[0.2em] text-blue-300/80">
+              <span>Site</span>
+              <ArrowRight className="h-3 w-3" />
+              <span>Design</span>
+              <ArrowRight className="h-3 w-3" />
+              <span>Compliance</span>
+              <ArrowRight className="h-3 w-3" />
+              <span>Cost</span>
             </div>
-            <span className="font-semibold tracking-tight text-lg">Aptimizer</span>
-          </div>
-          <div className="max-w-lg">
-            <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white leading-[1.05]">
-              Plot to BOQ.
+          </Reveal>
+
+          <Reveal delay={0.06} immediate>
+            <h1 className="mt-5 text-4xl sm:text-5xl font-semibold tracking-tight text-white leading-[1.05]">
+              Site to Schedule.
               <br />
-              <span className="text-blue-400">One calculation chain.</span>
+              <span className="text-blue-400">One connected engine.</span>
             </h1>
+          </Reveal>
+
+          <Reveal delay={0.12} immediate>
             <p className="mt-5 text-slate-300 text-base max-w-md">
-              Apartment planning, area statements, FAR/FSI compliance, quantity take-off, cost estimation and reports —
-              live from a single project model.
+              GIS-based site intelligence, automated apartment design and code compliance, quantity
+              take-off and costing — plus scheduling, all driven from a single project model.
             </p>
-            <div className="mt-10 grid grid-cols-3 gap-px bg-white/15 border border-white/15">
-              {[
-                ["FAR / FSI", "auto-computed"],
-                ["BOQ", "PDF + Excel"],
-                ["Compliance", "editable rules"],
-              ].map(([k, v]) => (
-                <div key={k} className="bg-slate-900/80 px-4 py-3">
-                  <div className="font-mono text-sm text-white">{k}</div>
-                  <div className="text-[11px] text-slate-400">{v}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-500 font-mono">CIVIL ENGINEERING PLANNING PLATFORM</p>
+          </Reveal>
+
+          <Stagger delay={0.2} className="mt-10 grid grid-cols-3 gap-3">
+            {PILLS.map(([title, caption]) => (
+              <RevealItem
+                key={title}
+                className="rounded-md border border-white/15 bg-white/5 px-3 py-3 backdrop-blur-sm"
+              >
+                <div className="font-mono text-[11px] uppercase tracking-wide text-white">{title}</div>
+                <div className="mt-1 text-[11px] leading-snug text-slate-400">{caption}</div>
+              </RevealItem>
+            ))}
+          </Stagger>
         </div>
+
+        <Reveal immediate className="relative">
+          <p className="text-[11px] text-slate-500 font-mono tracking-wide">
+            AI-ASSISTED PLANNING &amp; COMPLIANCE PLATFORM
+          </p>
+        </Reveal>
       </div>
 
-      <div className="flex items-center justify-center p-8 bg-white">
-        <form onSubmit={submit} className="w-full max-w-sm space-y-5" data-testid="login-form">
-          <div>
-            <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
-            <p className="text-sm text-slate-500 mt-1">Access your projects and calculations.</p>
-          </div>
-          {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-sm px-3 py-2" data-testid="login-error">
-              {error}
+      {/* Sign-in side: the glass auth flow from components/ui/sign-up, wired to
+          the real /auth/login call. Two steps, email then password, so the
+          field the visitor is answering is the only one on screen. */}
+      <div className="relative flex items-center justify-center overflow-hidden bg-card p-8">
+        <AuthGlassStyles />
+        <div aria-hidden="true" className="absolute inset-0 z-0 opacity-70">
+          <GradientBackground />
+        </div>
+
+        <form
+          onSubmit={submit}
+          className="relative z-10 flex w-[300px] flex-col items-center gap-8"
+          data-testid="login-form"
+        >
+          <fieldset disabled={busy} className="flex w-full flex-col items-center gap-8">
+            <AnimatePresence mode="wait">
+              {step === "email" ? (
+                <motion.div
+                  key="email-title"
+                  initial={{ y: 6, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3, ease: "easeOut" }}
+                  className="flex w-full flex-col items-center gap-3 text-center"
+                >
+                  <BlurFade delay={0.25} className="w-full">
+                    <p className="font-serif font-light text-4xl sm:text-5xl tracking-tight text-foreground">
+                      Sign in
+                    </p>
+                  </BlurFade>
+                  <BlurFade delay={0.4}>
+                    <p className="text-sm font-medium text-muted-foreground">
+                      Access your projects and calculations.
+                    </p>
+                  </BlurFade>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="password-title"
+                  initial={{ y: 6, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3, ease: "easeOut" }}
+                  className="flex w-full flex-col items-center gap-3 text-center"
+                >
+                  <BlurFade delay={0} className="w-full">
+                    <p className="font-serif font-light text-4xl sm:text-5xl tracking-tight text-foreground">
+                      Welcome back
+                    </p>
+                  </BlurFade>
+                  <BlurFade delay={0.25}>
+                    <p className="text-sm font-medium text-muted-foreground">
+                      Enter your password to continue.
+                    </p>
+                  </BlurFade>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="w-full space-y-6">
+              <BlurFade delay={step === "email" ? 0.55 : 0} className="w-full">
+                <div className="relative w-full">
+                  <AnimatePresence>
+                    {step === "password" && (
+                      <motion.div
+                        initial={{ y: -10, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        transition={{ duration: 0.3, delay: 0.4 }}
+                        className="absolute -top-6 left-4 z-10"
+                      >
+                        <label className="text-xs font-semibold text-muted-foreground">Email</label>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  <GlassInput
+                    data-testid="login-email-input"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="admin@aptimizer.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    onKeyDown={handleEmailKeyDown}
+                    leading={
+                      <div
+                        className={`relative z-10 flex flex-shrink-0 items-center justify-center overflow-hidden transition-all duration-300 ease-in-out ${
+                          email.length > 20 && step === "email" ? "w-0 px-0" : "w-10 pl-2"
+                        }`}
+                      >
+                        <Mail className="h-5 w-5 flex-shrink-0 text-foreground/80" />
+                      </div>
+                    }
+                    trailing={
+                      <div
+                        className={`relative z-10 flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${
+                          isEmailValid && step === "email" ? "w-10 pr-1" : "w-0"
+                        }`}
+                      >
+                        <GlassButton
+                          type="button"
+                          onClick={goToPassword}
+                          size="icon"
+                          aria-label="Continue with email"
+                          data-testid="login-continue-button"
+                          contentClassName="text-foreground/80 hover:text-foreground"
+                        >
+                          <ArrowRight className="h-5 w-5" />
+                        </GlassButton>
+                      </div>
+                    }
+                  />
+                </div>
+              </BlurFade>
+
+              <AnimatePresence>
+                {step === "password" && (
+                  <BlurFade key="password-field" className="w-full">
+                    <div className="relative w-full">
+                      <AnimatePresence>
+                        {password.length > 0 && (
+                          <motion.div
+                            initial={{ y: -10, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            transition={{ duration: 0.3 }}
+                            className="absolute -top-6 left-4 z-10"
+                          >
+                            <label className="text-xs font-semibold text-muted-foreground">Password</label>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                      <GlassInput
+                        ref={passwordInputRef}
+                        data-testid="login-password-input"
+                        type={showPassword ? "text" : "password"}
+                        autoComplete="current-password"
+                        placeholder="Password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        leading={
+                          <div className="relative z-10 flex w-10 flex-shrink-0 items-center justify-center pl-2">
+                            {password.length > 0 ? (
+                              <button
+                                type="button"
+                                aria-label="Toggle password visibility"
+                                onClick={() => setShowPassword(!showPassword)}
+                                className="rounded-full p-2 text-foreground/80 transition-colors hover:text-foreground"
+                              >
+                                {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                              </button>
+                            ) : (
+                              <Lock className="h-5 w-5 flex-shrink-0 text-foreground/80" />
+                            )}
+                          </div>
+                        }
+                        trailing={
+                          <div className="relative z-10 w-10 flex-shrink-0 pr-1">
+                            <GlassButton
+                              type="submit"
+                              size="icon"
+                              disabled={busy || password.length === 0}
+                              aria-label="Sign in"
+                              data-testid="login-submit-button"
+                              contentClassName="text-foreground/80 hover:text-foreground"
+                            >
+                              {busy ? (
+                                <Loader className="h-5 w-5 animate-spin" />
+                              ) : (
+                                <ArrowRight className="h-5 w-5" />
+                              )}
+                            </GlassButton>
+                          </div>
+                        }
+                      />
+                    </div>
+                    <BlurFade inView delay={0.2}>
+                      <button
+                        type="button"
+                        onClick={goBack}
+                        className="mt-4 flex items-center gap-2 text-sm text-foreground/70 transition-colors hover:text-foreground"
+                      >
+                        <ArrowLeft className="h-4 w-4" /> Go back
+                      </button>
+                    </BlurFade>
+                  </BlurFade>
+                )}
+              </AnimatePresence>
             </div>
-          )}
-          <div className="space-y-1.5">
-            <Label className="text-xs uppercase tracking-wide text-slate-500">Email</Label>
-            <Input
-              data-testid="login-email-input"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="rounded-sm"
-              placeholder="admin@aptimizer.com"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs uppercase tracking-wide text-slate-500">Password</Label>
-            <Input
-              data-testid="login-password-input"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="rounded-sm"
-            />
-          </div>
-          <Button type="submit" disabled={busy} data-testid="login-submit-button" className="w-full rounded-sm">
-            {busy ? "Signing in…" : "Sign in"}
-            <ArrowRight className="h-4 w-4 ml-1.5" />
-          </Button>
-          <p className="text-sm text-slate-500">
+          </fieldset>
+
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="flex w-full items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                data-testid="login-error"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <span>{error}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <p className="text-sm text-muted-foreground">
             No account?{" "}
-            <Link to="/register" className="text-blue-600 hover:underline" data-testid="go-register-link">
+            <Link to="/register" className="text-primary hover:underline" data-testid="go-register-link">
               Create one
             </Link>
           </p>

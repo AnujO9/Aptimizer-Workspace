@@ -1,7 +1,10 @@
 """Civil engineering calculation engine. Pure functions over a project document."""
 import math
 
+import iscodes
 import layout as layoutlib
+import parking as parkinglib
+import takeoff as takeofflib
 
 OCCUPANCY_PER_UNIT = {"studio": 2, "1bhk": 3, "2bhk": 4, "3bhk": 5, "4bhk": 6, "penthouse": 6, "custom": 4}
 
@@ -139,6 +142,17 @@ def area_metrics(project):
 
 
 def parking_metrics(project, areas):
+    """Delegates to the per-building parking engine.
+
+    Kept as a thin wrapper so every existing caller -- compliance, the IS/NBC parking and
+    accessibility modules, scheme comparison and the reports -- keeps its import and every
+    key it reads. `_legacy_parking_metrics` below is the flat site-wide calculation this
+    replaced, retained only for reference.
+    """
+    return parkinglib.plan(project, areas)
+
+
+def _legacy_parking_metrics(project, areas):
     p = project.get("parking") or {}
     units = areas["total_units"]
     area_per_slot = float(p.get("area_per_slot") or 30)
@@ -250,26 +264,84 @@ EQUIPMENT = [
 ]
 
 
-def quantities(project, areas):
+# Materials whose quantity follows the STRUCTURE, and so is taken off the designed
+# sections rather than a per-m2 rule. Everything else -- tiles, paint, doors, fixtures --
+# genuinely does scale with floor area or unit count, and keeps its ratio.
+DERIVED_KEYS = {
+    "concrete": ("concrete_m3", 1.0),
+    "steel": ("steel_kg", 1.0),
+    "cement": ("cement_bags", 1.0),
+    "sand": ("sand_m3", 1.0),
+    "aggregate": ("aggregate_m3", 1.0),
+}
+
+
+def quantities(project, areas, use_takeoff=True):
+    """Bill quantities. Structural items come from the take-off; the rest from ratios.
+
+    `use_takeoff=False` restores the old all-ratios behaviour, which is what the payload
+    reports alongside the derived figures so an estimator can see both.
+    """
     ratios = {**DEFAULT_RATIOS, **(project.get("quantity_ratios") or {})}
     area = areas["builtup_area_sqm"]
     units = areas["total_units"] or 0
+
+    derived = None
+    if use_takeoff and (areas.get("towers") or []):
+        try:
+            derived = takeofflib.structural_takeoff(project, areas)
+        except Exception:          # a take-off failure must not take the whole bill down
+            derived = None
+
     rows = []
     for key, (label, unit, ratio_key, basis) in MATERIAL_META.items():
         r = float(ratios.get(ratio_key) or 0)
         qty = r * (area if basis == "area" else units)
+        source = "ratio"
+        if derived and key in DERIVED_KEYS:
+            tk, factor = DERIVED_KEYS[key]
+            qty = float(derived["totals"].get(tk) or 0) * factor
+            source = "take-off"
         rows.append({"key": key, "label": label, "unit": unit, "ratio_key": ratio_key,
-                     "ratio": r, "basis": basis, "quantity": round(qty, 2)})
-    return {"ratios": ratios, "items": rows, "basis_area_sqm": area, "basis_units": units}
+                     "ratio": r, "basis": basis, "quantity": round(qty, 2), "source": source})
+
+    return {"ratios": ratios, "items": rows, "basis_area_sqm": area, "basis_units": units,
+            "takeoff": derived, "derived": bool(derived)}
+
+
+# Site wastage, as a share of the delivered quantity. Cut-and-bend loss on steel, spillage
+# and over-ordering on concrete, breakage on tiles: real material that is bought and paid
+# for but does not end up in the building.
+DEFAULT_WASTAGE_PCT = {
+    "concrete": 2.0, "cement": 3.0, "steel": 3.0, "bricks": 5.0, "sand": 6.0,
+    "aggregate": 6.0, "tiles": 8.0, "paint": 5.0, "waterproofing": 5.0, "finishing": 5.0,
+    "doors": 0.0, "windows": 0.0, "plumbing_fixtures": 2.0, "electrical_points": 2.0,
+}
+
+# Everything between the works cost and the figure a developer actually commits. Omitting
+# these is why the old grand total sat well under any real tender: a bill of materials plus
+# labour is not a project cost.
+DEFAULT_COST_ADDERS = {
+    "preliminaries_pct": 3.0,     # site setup, temporary works, supervision
+    "overhead_profit_pct": 12.0,  # contractor's overhead and margin
+    "contingency_pct": 5.0,       # design development and unforeseen
+    "escalation_pct": 4.0,        # price movement over the build period
+    "gst_pct": 18.0,              # works contract; 1% / 5% regimes apply to some housing
+}
 
 
 def boq(project, areas, qty):
     rates = {**DEFAULT_RATES, **(project.get("rates") or {})}
+    wastage = {**DEFAULT_WASTAGE_PCT, **(project.get("wastage_pct") or {})}
     qmap = {i["key"]: i for i in qty["items"]}
     materials = []
     for i in qty["items"]:
         rate = float(rates.get(i["key"]) or 0)
-        materials.append({**i, "rate": rate, "amount": round(i["quantity"] * rate, 2)})
+        w = float(wastage.get(i["key"]) or 0)
+        ordered = i["quantity"] * (1 + w / 100.0)
+        materials.append({**i, "rate": rate, "wastage_pct": w,
+                          "quantity_ordered": round(ordered, 2),
+                          "amount": round(ordered * rate, 2)})
     material_total = round(sum(m["amount"] for m in materials), 2)
 
     labour = []
@@ -290,35 +362,87 @@ def boq(project, areas, qty):
                           "rate": rate, "amount": round(days * rate, 2)})
     equipment_total = round(sum(e["amount"] for e in equipment), 2)
 
-    grand = round(material_total + labour_total + equipment_total, 2)
+    works = round(material_total + labour_total + equipment_total, 2)
+
+    # Applied in sequence, each on the running total, which is how a bill is actually
+    # built up: profit is earned on preliminaries, and tax is charged on the lot.
+    add = {**DEFAULT_COST_ADDERS, **(project.get("cost_adders") or {})}
+    running = works
+    adders = []
+    for key, label in (("preliminaries_pct", "Preliminaries and site establishment"),
+                       ("overhead_profit_pct", "Contractor overhead and profit"),
+                       ("contingency_pct", "Contingency"),
+                       ("escalation_pct", "Price escalation"),
+                       ("gst_pct", "GST on works contract")):
+        pct = float(add.get(key) or 0)
+        amount = round(running * pct / 100.0, 2)
+        adders.append({"key": key, "label": label, "pct": pct, "amount": amount,
+                       "on": round(running, 2)})
+        running = round(running + amount, 2)
+    grand = running
+
     units = areas["total_units"] or 0
     ba = areas["builtup_area_sqm"] or 0
     return {
         "materials": materials, "labour": labour, "equipment": equipment,
         "material_total": material_total, "labour_total": labour_total,
-        "equipment_total": equipment_total, "grand_total": grand,
+        "equipment_total": equipment_total,
+        "works_total": works, "adders": adders, "adders_total": round(grand - works, 2),
+        "grand_total": grand,
         "cost_per_unit": round(grand / units, 2) if units else 0,
         "cost_per_sqm": round(grand / ba, 2) if ba else 0,
         "currency": (project.get("config") or {}).get("currency", "INR"),
     }
 
 
-def utilities(project, areas):
+def water_demand(project, areas):
+    """IS 1172:1993 water demand — the single source of truth for the whole app.
+
+    Both this module's Utilities panel and the IS/NBC Water module (engineering.m5_water)
+    call this, so a project can no longer show two different daily demands and two
+    different sump sizes. Occupancy comes from the per-unit-type figures in `areas`, which
+    is finer-grained than a flat persons-per-unit assumption.
+
+    A user-supplied `utility_config.lpcd` overrides the code total; the domestic /
+    flushing / external split is then scaled to it rather than being re-invented.
+    """
     u = project.get("utility_config") or {}
     persons = areas["occupants"]
-    lpcd = float(u.get("lpcd") or 135)
-    demand = persons * lpcd  # litres/day
-    domestic = demand * 0.7
-    flushing = demand * 0.3
+
+    code_lpcd = iscodes.WATER_LPCD
+    code_total = code_lpcd["domestic"] + code_lpcd["flushing"] + code_lpcd["external"]
+    lpcd = float(u.get("lpcd") or code_total)
+    scale = lpcd / code_total if code_total else 1.0
+
+    domestic = persons * code_lpcd["domestic"] * scale
+    flushing = persons * code_lpcd["flushing"] * scale
+    external = persons * code_lpcd["external"] * scale
+    demand = domestic + flushing + external
+    return {
+        "persons": persons, "lpcd": lpcd,
+        "domestic_lpd": domestic, "flushing_lpd": flushing, "external_lpd": external,
+        "total_lpd": demand,
+        "sewage_lpd": demand * float(u.get("sewage_factor") or iscodes.SEWAGE_FACTOR),
+    }
+
+
+def utilities(project, areas, city=None):
+    u = project.get("utility_config") or {}
+    w = water_demand(project, areas)
+    persons, lpcd, demand = w["persons"], w["lpcd"], w["total_lpd"]
+    domestic, flushing = w["domestic_lpd"], w["flushing_lpd"]
     ug_days = float(u.get("ug_tank_days") or 1.0)
     oh_hours = float(u.get("oh_tank_hours") or 8.0)
     ug = demand * ug_days
     oh = demand * (oh_hours / 24.0)
-    stp = demand * float(u.get("sewage_factor") or 0.8)
+    stp = w["sewage_lpd"]
     wtp = demand * float(u.get("wtp_factor") or 1.0)
     roof = areas["ground_footprint_sqm"]
-    rainfall_mm = float(u.get("annual_rainfall_mm") or 900)
-    runoff = float(u.get("runoff_coefficient") or 0.85)
+    # Default to the project city's own rainfall rather than a flat 900 mm, so this and
+    # the Storm/RWH module (which always used the city table) agree.
+    city_rainfall = (city or {}).get("annual_rainfall_mm")
+    rainfall_mm = float(u.get("annual_rainfall_mm") or city_rainfall or 900)
+    runoff = float(u.get("runoff_coefficient") or iscodes.RUNOFF_C["rcc_roof"])
     rwh = roof * (rainfall_mm / 1000.0) * runoff * 1000  # litres/year
     connected_load = areas["total_units"] * float(u.get("kw_per_unit") or 4.0)
     return {
@@ -327,6 +451,8 @@ def utilities(project, areas):
         "water_demand_lpd": round(demand, 0),
         "domestic_lpd": round(domestic, 0),
         "flushing_lpd": round(flushing, 0),
+        "external_lpd": round(w["external_lpd"], 0),
+        "annual_rainfall_mm": rainfall_mm,
         "ug_tank_litres": round(ug, 0),
         "ug_tank_cum": round(ug / 1000.0, 2),
         "oh_tank_litres": round(oh, 0),
@@ -347,10 +473,10 @@ DEFAULT_RULES = [
     {"id": "ground_coverage", "code": "GC-01", "label": "Maximum ground coverage", "param": "ground_coverage_pct", "operator": "max", "threshold": 40.0, "unit": "%", "enabled": True},
     {"id": "open_space", "code": "OS-01", "label": "Minimum open space", "param": "open_space_pct", "operator": "min", "threshold": 30.0, "unit": "%", "enabled": True},
     {"id": "stair_width", "code": "NBC-STR", "label": "Minimum staircase width", "param": "min_stair_width", "operator": "min", "threshold": 1.5, "unit": "m", "enabled": True},
-    {"id": "corridor_width", "code": "NBC-COR", "label": "Minimum corridor width", "param": "min_corridor_width", "operator": "min", "threshold": 1.5, "unit": "m", "enabled": True},
+    {"id": "corridor_width", "code": "NBC-COR", "label": "Minimum corridor width (means of egress)", "param": "min_corridor_width", "operator": "min", "threshold": iscodes.FIRE["corridor_min_m"], "unit": "m", "enabled": True},
     {"id": "lift_ratio", "code": "LFT-01", "label": "Minimum lifts per tower (>= floors/8)", "param": "lift_shortfall", "operator": "max", "threshold": 0, "unit": "nos", "enabled": True},
     {"id": "fire_exits", "code": "FIR-01", "label": "Minimum fire exits per floor", "param": "min_exits_per_floor", "operator": "min", "threshold": 2, "unit": "nos", "enabled": True},
-    {"id": "travel_distance", "code": "FIR-02", "label": "Maximum travel distance to exit", "param": "max_travel_distance_m", "operator": "max", "threshold": 30.0, "unit": "m", "enabled": True},
+    {"id": "travel_distance", "code": "FIR-02", "label": "Maximum travel distance to exit", "param": "max_travel_distance_m", "operator": "max", "threshold": iscodes.FIRE["max_travel_m"], "unit": "m", "enabled": True},
     {"id": "ramp_slope", "code": "ACC-01", "label": "Maximum ramp slope", "param": "ramp_slope_pct", "operator": "max", "threshold": 12.5, "unit": "%", "enabled": True},
     {"id": "accessible_parking", "code": "ACC-02", "label": "Minimum accessible parking", "param": "accessible_parking_pct", "operator": "min", "threshold": 2.0, "unit": "%", "enabled": True},
     {"id": "parking_provision", "code": "PRK-01", "label": "Parking provided vs required", "param": "parking_deficit", "operator": "max", "threshold": 0, "unit": "nos", "enabled": True},
@@ -410,7 +536,11 @@ def analyse(project):
     park = parking_metrics(project, areas)
     qty = quantities(project, areas)
     bill = boq(project, areas, qty)
-    util = utilities(project, areas)
+    # The engineering config carries the project city; passing its reference data here
+    # keeps the Utilities RWH yield consistent with the Storm/RWH module.
+    eng_cfg = project.get("engineering") or {}
+    city = iscodes.city_reference(eng_cfg.get("city"), eng_cfg.get("state"))
+    util = utilities(project, areas, city)
     comp = compliance(project, areas, park)
     return {
         "areas": areas, "parking": park, "quantities": qty, "boq": bill,
