@@ -9,6 +9,7 @@ import {
   RotateCcw,
   ShieldAlert,
   Users,
+  Wallet,
   X,
 } from "lucide-react";
 import { api, apiError } from "../lib/api";
@@ -47,7 +48,7 @@ const TARGET_TONE = {
   invalid: "danger",
 };
 
-function TargetBanner({ target }) {
+function TargetBanner({ target, cost }) {
   if (!target) return null;
   const bad = TARGET_TONE[target.status] === "danger";
   const Icon = bad ? CalendarX : CalendarCheck;
@@ -84,6 +85,30 @@ function TargetBanner({ target }) {
           </p>
         )}
         {target.status === "invalid" && <p>{target.note}</p>}
+        {cost && cost.delta !== 0 && (
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5"
+            data-testid="prog-target-cost">
+            <Wallet className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Finishing{" "}
+              <span className="font-semibold">
+                {plural(Math.abs(cost.days), "day")} {cost.days > 0 ? "earlier" : "later"}
+              </span>{" "}
+              {cost.delta > 0 ? "adds" : "saves"}{" "}
+              <span className="font-semibold">{money(Math.abs(cost.delta), "INR")}</span>
+              {cost.delta > 0 && (
+                <>
+                  {": "}
+                  {money(cost.premium, "INR")} overtime premium,{" "}
+                  {money(cost.lost, "INR")} lost output per head from crowding the same
+                  work front
+                  {cost.prelim > 0 && <>, {money(cost.prelim, "INR")} more site running cost</>}
+                </>
+              )}
+              .
+            </span>
+          </p>
+        )}
         {changes.length > 0 && (
           <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-emerald-800">
             <Users className="h-3.5 w-3.5 shrink-0" />
@@ -278,6 +303,33 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
     return { t0, span, pct: (s) => ((day(s).getTime() - t0) / span) * 100 };
   }, [plan]);
 
+  // The baseline programme -- no target date, no crew multipliers -- is what the cost
+  // delta is measured against. Fetched once per project rather than on every re-plan.
+  const [baseline, setBaseline] = useState(null);
+  useEffect(() => {
+    if (!projectId) return;
+    api.post(`/projects/${projectId}/schedule`, { config: { start_date: cfg.start_date } })
+      .then(({ data }) => setBaseline(data.ok ? data : null))
+      .catch(() => setBaseline(null));
+    // eslint-disable-next-line
+  }, [projectId, cfg.start_date]);
+
+  const costDelta = (() => {
+    const t = plan?.time_cost;
+    const b = baseline?.time_cost;
+    if (!t || !b || !plan?.target) return null;
+    const days = Math.round(
+      (new Date(`${baseline.finish}T00:00:00`) - new Date(`${plan.finish}T00:00:00`))
+      / 86400000);
+    return {
+      delta: Math.round(t.total_cost - b.total_cost),
+      premium: Math.round(t.acceleration_premium - b.acceleration_premium),
+      lost: Math.round(t.lost_productivity - b.lost_productivity),
+      prelim: Math.round(t.preliminaries_total - b.preliminaries_total),
+      days,
+    };
+  })();
+
   const editCount = Object.keys(cfg.task_overrides || {}).length;
   const tasks = plan?.activities || [];
   // Tasks grouped under the phase they belong to, and an id -> name map so a dependency
@@ -333,7 +385,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
           data-testid="prog-error">{err}</p>
       )}
 
-      <TargetBanner target={plan?.target} />
+      <TargetBanner target={plan?.target} cost={costDelta} />
 
       {plan?.safety && (
         <p className="text-[11px] text-slate-700 bg-slate-50 border border-slate-200 rounded-sm px-2 py-1.5 flex gap-2"

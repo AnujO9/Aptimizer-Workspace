@@ -182,6 +182,11 @@ class Activity:
     floor: Optional[int] = None     # drives the Line of Balance view
     deps: List[Dep] = field(default_factory=list)
     milestone: bool = False
+    # What compression cost on this task, kept apart from the base labour so the user can
+    # see the price of speed rather than finding it blended into a rate.
+    acceleration_premium: float = 0.0
+    crew_multiplier: float = 1.0
+    crew_efficiency: float = 1.0
     custom: bool = False            # added by the user, not derived from the quantities
     removable: bool = True          # False when a code-mandated lag hangs off it
     # Which fields the user overrode, and the generated values they replaced. Both are
@@ -212,6 +217,9 @@ class Activity:
             "work_days": self.work_days, "exposed": self.exposed,
             "cost": round(self.cost, 2), "tower": self.tower, "floor": self.floor,
             "milestone": self.milestone, "custom": self.custom,
+            "acceleration_premium": round(self.acceleration_premium, 2),
+            "crew_multiplier": self.crew_multiplier,
+            "crew_efficiency": self.crew_efficiency,
             "removable": self.removable,
             "edited": self.edited, "generated": self.generated,
             "pinned_start": self.pinned_start.isoformat() if self.pinned_start else None,
@@ -230,6 +238,90 @@ class Activity:
             "predecessors": [{"id": d.pred, "type": d.kind, "lag_days": d.lag_days,
                               "hard": d.hard, "reason": d.reason} for d in self.deps],
         }
+
+
+# ---------------------------------------------------------------- time / cost curve
+# Acceleration is not free, and the model used to say it was. Duration is
+# quantity / (output x crew) and labour cost was work_days x crew x wage, so the crew term
+# cancelled exactly: doubling the crew halved the days, doubled the headcount, and landed
+# on the same rupee figure. Pulling a finish date in therefore cost nothing, which is wrong
+# in the direction that matters commercially -- it is precisely the trade a developer is
+# being asked to price.
+#
+# Three mechanisms put the cost back, and all three are tunable here rather than buried.
+
+# (a) PRODUCTIVITY DERATING. Output per head falls as more crews share one front: the same
+# hoist, the same pour front, the same access. These are the standard congestion figures
+# used for delay-and-disruption analysis -- roughly 15% lost at double crew and nearly 30%
+# at triple. Interpolated linearly between the points.
+CREW_EFFICIENCY = [
+    (1.0, 1.00),
+    (1.5, 0.92),
+    (2.0, 0.85),
+    (2.5, 0.78),
+    (3.0, 0.72),
+]
+
+# (b) ACCELERATION PREMIUM on wages. Compressing beyond the natural duration means
+# overtime, second shifts and weekend working. Reported as its own cost line so the user
+# sees what speed cost rather than finding it blended into the rate.
+WAGE_PREMIUM = [
+    (1.0, 0.00),
+    (1.5, 0.12),
+    (2.0, 0.20),
+    (2.5, 0.27),
+    (3.0, 0.32),
+]
+
+# (c) TIME-RELATED PRELIMINARIES. A longer programme costs more with no extra labour at
+# all: site establishment, supervision, plant hire, temporary works and finance all run per
+# month. The RATE is not invented here -- it is engine.DEFAULT_COST_ADDERS["preliminaries_pct"]
+# converted to a monthly figure over the baseline duration, so the two modules cannot
+# disagree about what preliminaries cost.
+
+
+# The programme duration used as the reference for the monthly preliminaries rate. The
+# engine expresses preliminaries as a percentage of works cost for a project of ordinary
+# length; converting that to a per-month figure needs a length to divide by, and the
+# baseline programme is the only non-arbitrary one available.
+def preliminaries_per_month(project: dict, analysis: dict, baseline_months: float) -> float:
+    """Monthly time-related cost, derived from the engine's own preliminaries percentage.
+
+    A longer programme costs more even with no extra labour: site establishment,
+    supervision, plant hire, temporary works and finance all run per month. Without this
+    the model says a slower build is free, which is the mirror of the bug that said a
+    faster one was.
+    """
+    import engine as _engine
+    add = {**_engine.DEFAULT_COST_ADDERS, **(project.get("cost_adders") or {})}
+    pct = float(add.get("preliminaries_pct") or 0)
+    works = float((analysis.get("boq") or {}).get("works_total") or 0)
+    if pct <= 0 or works <= 0 or baseline_months <= 0:
+        return 0.0
+    return works * pct / 100.0 / baseline_months
+
+
+def _interp(table, x: float) -> float:
+    """Linear interpolation on a (x, y) table, flat outside its ends."""
+    if x <= table[0][0]:
+        return table[0][1]
+    if x >= table[-1][0]:
+        return table[-1][1]
+    for (x0, y0), (x1, y1) in zip(table, table[1:]):
+        if x0 <= x <= x1:
+            span = (x1 - x0) or 1.0
+            return y0 + (y1 - y0) * (x - x0) / span
+    return table[-1][1]
+
+
+def crew_efficiency(multiplier: float) -> float:
+    """Output per head at this crew multiplier. 1.0 at the natural crew."""
+    return _interp(CREW_EFFICIENCY, max(float(multiplier or 1.0), 1.0))
+
+
+def wage_premium(multiplier: float) -> float:
+    """Overtime and shift premium on the wage, as a fraction."""
+    return _interp(WAGE_PREMIUM, max(float(multiplier or 1.0), 1.0))
 
 
 def duration_days(quantity: float, output_per_day: float, crew: int) -> int:
@@ -745,13 +837,23 @@ def build_activities(project: Dict[str, Any], analysis: Dict[str, Any],
             milestone=False, fixed_days=None):
         key = crew_key or trade or aid
         crew = cfg.crew(key, crew_default)
-        wd = int(fixed_days) if fixed_days else duration_days(qty, out, crew)
+        mult = float(cfg.crew_multipliers.get(key, 1.0) or 1.0)
+        # Derated output, so a bigger crew no longer halves the duration cleanly. This is
+        # what makes compression show up in the days, and therefore in the cost.
+        eff = crew_efficiency(mult)
+        wd = int(fixed_days) if fixed_days else duration_days(qty, out * eff, crew)
         if not milestone and not fixed_days and qty > 0 and out > 0:
             cfg.seen_crews[key] = max(cfg.seen_crews.get(key, 0), crew)
-        labour_cost = wd * crew * wage.get(crew_key or trade, 900.0)
+        base_wage = wage.get(crew_key or trade, 900.0)
+        premium_rate = wage_premium(mult)
+        labour_base = wd * crew * base_wage
+        premium = labour_base * premium_rate
+        labour_cost = labour_base + premium
         a = Activity(id=aid, name=name, phase=phase, trade=trade, quantity=qty, unit=unit,
                      output_per_day=out, crew=crew, work_days=wd, exposed=exposed,
                      cost=qty * mat_rate + (0 if milestone else labour_cost),
+                     acceleration_premium=(0.0 if milestone else premium),
+                     crew_multiplier=round(mult, 3), crew_efficiency=round(eff, 3),
                      tower=tower, floor=floor, deps=list(deps or []), milestone=milestone)
         acts.append(a)
         return a
@@ -1400,6 +1502,24 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
                                       float(eng.get("grid_bay_y_m") or 0)) or 4.0
         safety = audit_safety(acts, cfg, span)
 
+        # The uncompressed duration, used as the reference the time/cost curve is measured
+        # against. Computed with a forward pass only, so it costs about a millisecond.
+        # Always computed, never only when multipliers exist. The monthly preliminaries
+        # rate is derived by dividing the engine's percentage by THIS duration, so if it
+        # were the actual duration instead the rate would self-cancel and preliminaries
+        # would come out identical at every programme length -- which is exactly the bug
+        # this whole fix exists to remove, reintroduced one level up.
+        natural_months = 0.0
+        try:
+            plain = ScheduleConfig.from_dict({**cfg.to_dict(), "crew_multipliers": {},
+                                              "target_finish": ""})
+            plain_acts, _ = build_activities(project, analysis, plain)
+            plain_acts, _ = apply_task_edits(plain_acts, plain)
+            natural_finish = project_finish(plain_acts, start, cal)
+            natural_months = ((natural_finish - start).days + 1) / 30.44
+        except Exception:
+            natural_months = 0.0
+
         cpm = run_cpm(acts, start, cal, verify=not summary)
         # Dates exist now, so the realised gaps can be checked as well as the lags.
         safety += audit_scheduled_dates(acts, cfg, span)
@@ -1436,6 +1556,52 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
         scheduled_cost = sum(a.cost for a in acts)
         boq_total = float((analysis.get("boq") or {}).get("grand_total") or 0)
 
+        # ---- time / cost curve --------------------------------------------------------
+        # Three things move with programme length, and they move in opposite directions,
+        # which is the point: compressing costs an overtime premium and loses output per
+        # head to congestion; extending costs time-related preliminaries. Cost is therefore
+        # lowest near the duration the quantities imply and rises either side of it.
+        # A committed finish date later than the work needs does not make the work cheaper:
+        # the site establishment, supervision and plant stay on hire until the project is
+        # handed over. So preliminaries run to whichever is later, the date the work
+        # finishes or the date the user has committed to. Without this the model says a
+        # slower programme is free, which is the mirror of the bug that said a faster one
+        # was.
+        billed_finish = finish
+        if cfg.target_finish:
+            try:
+                wanted = date.fromisoformat(cfg.target_finish)
+                billed_finish = max(finish, wanted)
+            except ValueError:
+                pass
+        months = max(((billed_finish - start).days + 1) / 30.44, 0.0)
+        premium_total = sum(a.acceleration_premium for a in acts)
+        # What congestion cost: the share of each derated task's labour that the lost
+        # output per head accounts for.
+        lost_productivity = sum(
+            (a.cost - a.acceleration_premium) * (1.0 - a.crew_efficiency)
+            for a in acts if 0 < a.crew_efficiency < 1.0)
+        # Preliminaries are priced per month off the UNCOMPRESSED programme, so the monthly
+        # rate does not itself move when the user changes the target date -- only the number
+        # of months it is charged over does.
+        prelim_month = preliminaries_per_month(project, analysis, natural_months or months)
+        prelim_total = prelim_month * months
+        time_cost = {
+            "scheduled_cost": round(scheduled_cost, 2),
+            "acceleration_premium": round(premium_total, 2),
+            "lost_productivity": round(lost_productivity, 2),
+            "preliminaries_per_month": round(prelim_month, 2),
+            "preliminaries_total": round(prelim_total, 2),
+            "duration_months": round(months, 2),
+            "natural_months": round(natural_months or months, 2),
+            "billed_to": billed_finish.isoformat(),
+            "extended_days": max((billed_finish - finish).days, 0),
+            "total_cost": round(scheduled_cost + prelim_total, 2),
+            "note": ("Cost is lowest near the duration the quantities imply. Compressing "
+                     "adds an overtime premium and loses output per head to congestion; "
+                     "extending adds time-related preliminaries. Both directions cost."),
+        }
+
         return {
             "ok": True,
             "config": cfg.to_dict(),
@@ -1464,6 +1630,7 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
                 "findings": safety,
                 "enforced": not cfg.allow_unsafe_striking,
             },
+            "time_cost": time_cost,
             "cost_check": {
                 "scheduled_cost": round(scheduled_cost, 2),
                 "boq_grand_total": round(boq_total, 2),
