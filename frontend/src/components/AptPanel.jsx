@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, Check, Copy, Send, Sparkles, Trash2 } from "lucide-react";
-import { api, apiError } from "../lib/api";
+import { api, apiError, API_BASE, authHeaders } from "../lib/api";
 import { Markdown } from "./AiPanel";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./ui/sheet";
@@ -88,6 +88,7 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(undefined);
   const [suggestions, setSuggestions] = useState([]);
+  const [streaming, setStreaming] = useState("");
   const endRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -109,10 +110,14 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [thread, busy]);
+  }, [thread, busy, streaming]);
 
   const notConfigured = status && status.configured === false;
 
+  // Streamed with fetch rather than EventSource: EventSource cannot POST, and the
+  // conversation has to go up with the request. Falls back to the plain endpoint if the
+  // stream cannot be opened at all, so a proxy that buffers SSE degrades to the old
+  // behaviour instead of breaking the panel.
   const send = useCallback(async (text) => {
     const content = (text ?? draft).trim();
     if (!content || busy) return;
@@ -120,15 +125,57 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
     setThread(next);
     setDraft("");
     setBusy(true);
+    setStreaming("");
+
+    const payload = { messages: next.map((m) => ({ role: m.role, content: m.content })) };
     try {
-      const { data } = await api.post(`/projects/${projectId}/ai/chat`, {
-        messages: next.map((m) => ({ role: m.role, content: m.content })),
+      const res = await fetch(`${API_BASE}/projects/${projectId}/ai/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        credentials: "include",
+        body: JSON.stringify(payload),
       });
-      setThread(data.thread || [...next, data.reply]);
-    } catch (e) {
-      setThread(next);
-      toast.error(apiError(e.response?.data?.detail));
+      if (!res.ok || !res.body) throw new Error(`stream unavailable (${res.status})`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let acc = "";
+      let finished = false;
+
+      while (!finished) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line; a partial frame stays in the buffer.
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() || "";
+        for (const frame of frames) {
+          const line = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (evt.delta) { acc += evt.delta; setStreaming(acc); }
+          if (evt.error) throw new Error(evt.error);
+          if (evt.done) {
+            setThread(evt.thread || [...next, evt.done]);
+            finished = true;
+          }
+        }
+      }
+      if (!finished) throw new Error("stream ended before the answer was complete");
+    } catch (err) {
+      // One retry on the non-streaming route. It reuses the same context and the same
+      // citation guard, so the answer is identical -- it just arrives all at once.
+      try {
+        const { data } = await api.post(`/projects/${projectId}/ai/chat`, payload);
+        setThread(data.thread || [...next, data.reply]);
+      } catch (e) {
+        setThread(next);
+        toast.error(apiError(e.response?.data?.detail) || err.message);
+      }
     } finally {
+      setStreaming("");
       setBusy(false);
       inputRef.current?.focus();
     }
@@ -206,9 +253,16 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
           ) : (
             thread.map((m, i) => <Bubble key={i} m={m} />)
           )}
-          {busy && (
+          {streaming ? (
+            <div data-testid="apt-streaming">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">Apt</div>
+              <div className="border-l-2 border-blue-200 pl-3">
+                <Markdown text={streaming} testid="apt-answer-streaming" />
+              </div>
+            </div>
+          ) : busy ? (
             <p className="text-sm text-slate-400" data-testid="apt-thinking">Thinking…</p>
-          )}
+          ) : null}
           <div ref={endRef} />
         </div>
 

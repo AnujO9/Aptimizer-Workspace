@@ -2,10 +2,20 @@ import axios from "axios";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
+// Exported for the streaming chat, which uses fetch rather than axios: EventSource cannot
+// POST, and the conversation has to go up with the request.
+export const API_BASE = `${BACKEND_URL}/api`;
+
 export const api = axios.create({
-  baseURL: `${BACKEND_URL}/api`,
+  baseURL: API_BASE,
   withCredentials: true,
 });
+
+/** The auth headers axios adds by interceptor, for callers that bypass axios. */
+export const authHeaders = () => {
+  const token = localStorage.getItem("aptimizer_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("aptimizer_token");

@@ -270,6 +270,66 @@ async def _openai_compatible_generate(key: str, base_url: str, models: list,
     return await _with_retries(models, call, label)
 
 
+async def stream_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer",
+                          prefer_fast: bool = False):
+    """Yield the answer in chunks as the provider produces it.
+
+    An async generator of text fragments, then a final ("__done__", model, provider)
+    tuple so the caller knows which model actually answered -- the caller needs that to
+    store the message, and it is only known once the chain has settled.
+
+    Deliberately NO retry chain here. `generate_markdown` can quietly step down to another
+    model because nothing has been shown yet; a stream has already put tokens on the
+    reader's screen, and restarting mid-answer would either duplicate text or rewrite it
+    under them. So streaming tries one model, and a failure falls back to the non-streaming
+    path in the caller rather than being papered over here.
+    """
+    p = provider()
+    if not p["configured"]:
+        raise AIUnavailable(p["detail"])
+
+    name = p["provider"]
+    chain = [p["model"]] + [m for m in _fallback_models(name) if m != p["model"]]
+    if prefer_fast and len(chain) > 1:
+        chain = chain[1:] + chain[:1]
+    model = chain[0]
+
+    if name in ("grok", "groq"):
+        from openai import AsyncOpenAI
+        env, base = (("XAI_API_KEY", XAI_BASE_URL) if name == "grok"
+                     else ("GROQ_API_KEY", GROQ_BASE_URL))
+        client = AsyncOpenAI(api_key=os.environ[env].strip(), base_url=base)
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": prompt}],
+            temperature=0.3, stream=True)
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+        yield ("__done__", model, name)
+        return
+
+    if name == "gemini":
+        from google import genai
+        from google.genai import types as gtypes
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
+        stream = await client.aio.models.generate_content_stream(
+            model=model, contents=prompt,
+            config=gtypes.GenerateContentConfig(system_instruction=system, temperature=0.3))
+        async for chunk in stream:
+            if getattr(chunk, "text", None):
+                yield chunk.text
+        yield ("__done__", model, name)
+        return
+
+    # Any provider without a streaming path still works -- it just arrives in one piece.
+    result = await generate_markdown(system, prompt, session_hint=session_hint,
+                                     prefer_fast=prefer_fast)
+    yield result["text"]
+    yield ("__done__", result["model"], result["provider"])
+
+
 async def generate_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer",
                             prefer_fast: bool = False) -> dict:
     """Run one prompt and return {"text", "model", "provider"}.

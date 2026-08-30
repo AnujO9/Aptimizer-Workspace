@@ -1,3 +1,4 @@
+import json
 import math
 import os
 from pathlib import Path
@@ -993,6 +994,108 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
                                  {"$set": {"apt_thread": thread}})
     return {"reply": reply, "thread": thread, "context_chars": len(serialised),
             "tier": tier, "prep_ms": timer.ms}
+
+
+@api.post("/projects/{project_id}/ai/chat/stream")
+async def ai_chat_stream(project_id: str, body: ChatIn,
+                         user: dict = Depends(get_current_user)):
+    """The same answer as /ai/chat, streamed as server-sent events.
+
+    Event shape, one JSON object per `data:` line:
+        {"delta": "..."}                    a fragment of the answer
+        {"done": {...reply...}, "thread":}  the finished message, stored
+        {"error": "..."}                    something went wrong mid-stream
+
+    The citation guard runs on the COMPLETED text, before the message is stored and before
+    the done event goes out. Tokens reach the reader unverified -- that is what streaming
+    means -- but the stored message and the flags the UI renders are checked, so nothing
+    the reader can act on has skipped the guard.
+    """
+    proj = await load_project(project_id, user, write=True)
+    messages = [m for m in body.messages
+                if m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()]
+    if not messages or messages[-1].get("role") != "user":
+        raise HTTPException(status_code=400, detail="Send at least one user message")
+
+    question = str(messages[-1]["content"])
+    tier = speedlib.classify(question)
+    timer = speedlib.Timer()
+
+    async def events():
+        # Chit-chat never reaches a provider, so it streams as a single event.
+        if tier == speedlib.NONE:
+            text = (speedlib.CAPABILITY if speedlib.is_capability_question(question)
+                    else speedlib.GREETING)
+            reply = {"role": "assistant", "content": text, "model": "local",
+                     "provider": "aptimizer", "at": now_iso(), "tier": tier,
+                     "unverified_citations": [], "unconfirmed_clauses": [],
+                     "verified_citations": []}
+            thread = (messages + [reply])[-CHAT_TURNS_STORED:]
+            await db.projects.update_one({"_id": oid(project_id)},
+                                         {"$set": {"apt_thread": thread}})
+            yield "data: " + json.dumps({"delta": text}) + "\n\n"
+            yield "data: " + json.dumps({"done": reply, "thread": thread}) + "\n\n"
+            return
+
+        full = tier == speedlib.FULL
+        an, eng = speedlib.cached_analysis(proj, engine.analyse,
+                                           englib.analyse_engineering,
+                                           need_engineering=full)
+        context = speedlib.cached_context(
+            proj, tier,
+            (lambda: aptlib.build(proj, an, eng)) if full
+            else (lambda: speedlib.light_context(proj, an)))
+        serialised = ailib.context_block(context)
+        logger.info("apt.stream project=%s tier=%s chars=%d prep_ms=%s",
+                    project_id, tier, len(serialised), timer.ms)
+
+        recent = messages[-CHAT_TURNS_SENT:]
+        transcript = "\n\n".join(f'{m["role"].upper()}: {m["content"]}' for m in recent)
+        parts, model, prov = [], "", ""
+        try:
+            async for chunk in ailib.stream_markdown(
+                    ailib.PROMPTS["chat"],
+                    "Project state:\n\n" + serialised + "\n\nConversation:\n\n" + transcript,
+                    session_hint=f"chat-{project_id}", prefer_fast=not full):
+                if isinstance(chunk, tuple):
+                    _, model, prov = chunk
+                    break
+                parts.append(chunk)
+                yield "data: " + json.dumps({"delta": chunk}) + "\n\n"
+        except Exception as exc:
+            logger.warning("apt.stream failed, falling back: %s", exc)
+            # A stream that dies before producing anything can still be answered the
+            # ordinary way; one that died mid-answer cannot be restarted without
+            # rewriting text the reader has already seen.
+            if parts:
+                yield "data: " + json.dumps({"error": str(exc)}) + "\n\n"
+                return
+            try:
+                result = await ailib.generate_markdown(
+                    ailib.PROMPTS["chat"],
+                    "Project state:\n\n" + serialised + "\n\nConversation:\n\n" + transcript,
+                    session_hint=f"chat-{project_id}", prefer_fast=not full)
+                parts, model, prov = [result["text"]], result["model"], result["provider"]
+                yield "data: " + json.dumps({"delta": result["text"]}) + "\n\n"
+            except Exception as exc2:
+                yield "data: " + json.dumps({"error": str(exc2)}) + "\n\n"
+                return
+
+        text = "".join(parts)
+        cites = citelib.verify(text)
+        reply = {"role": "assistant", "content": text, "model": model or "unknown",
+                 "provider": prov or "unknown", "at": now_iso(), "tier": tier,
+                 "unverified_citations": cites["unverified"],
+                 "unconfirmed_clauses": cites["code_only"],
+                 "verified_citations": cites["resolved"]}
+        thread = (messages + [reply])[-CHAT_TURNS_STORED:]
+        await db.projects.update_one({"_id": oid(project_id)},
+                                     {"$set": {"apt_thread": thread}})
+        yield "data: " + json.dumps({"done": reply, "thread": thread}) + "\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @api.get("/projects/{project_id}/ai/chat")
