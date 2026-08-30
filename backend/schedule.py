@@ -184,6 +184,16 @@ class Activity:
     milestone: bool = False
     custom: bool = False            # added by the user, not derived from the quantities
     removable: bool = True          # False when a code-mandated lag hangs off it
+    # Which fields the user overrode, and the generated values they replaced. Both are
+    # carried so the UI can mark edited cells and a reset can restore the original.
+    edited: Dict[str, Any] = field(default_factory=dict)
+    generated: Dict[str, Any] = field(default_factory=dict)
+    pinned_start: Optional[date] = None
+    pinned_finish: Optional[date] = None
+    pin_conflict: str = ""          # why a pin could not be honoured, if it could not
+    # Display order within a phase. Reordering is DISPLAY only -- dependencies decide when
+    # work happens -- so this never reaches the CPM.
+    order: Optional[int] = None
     # computed
     es: Optional[date] = None
     ef: Optional[date] = None
@@ -203,6 +213,11 @@ class Activity:
             "cost": round(self.cost, 2), "tower": self.tower, "floor": self.floor,
             "milestone": self.milestone, "custom": self.custom,
             "removable": self.removable,
+            "edited": self.edited, "generated": self.generated,
+            "pinned_start": self.pinned_start.isoformat() if self.pinned_start else None,
+            "pinned_finish": self.pinned_finish.isoformat() if self.pinned_finish else None,
+            "pin_conflict": self.pin_conflict,
+            "order": self.order,
             "start": self.es.isoformat() if self.es else None,
             "finish": (self.ef - timedelta(days=1)).isoformat() if self.ef else None,
             "late_start": self.ls.isoformat() if self.ls else None,
@@ -295,6 +310,57 @@ def _forward(acts, order, cal: WorkCalendar, start: date) -> None:
                 ef = need
                 es = cal.sub_work_days(ef, a.work_days, a.exposed)
         a.es, a.ef = es, ef
+
+        # A pinned date is a constraint, not a preference -- but it is checked against the
+        # network before it is honoured. Three outcomes, in this order:
+        #
+        #   1. The pin is LATER than the earliest start. Honoured: this is how a user
+        #      models a delay the generated plan cannot know about, and everything
+        #      downstream moves with it, exactly as a real slip would.
+        #   2. The pin is EARLIER than dependencies allow, and one of those dependencies
+        #      is a code-mandated wait (curing, prop removal). REFUSED outright. IS 456
+        #      lags outrank every user input; a pin that strikes props early is the one
+        #      instruction this engine must never follow.
+        #   3. The pin is EARLIER than dependencies allow for ordinary reasons. Refused
+        #      too, but reported as a conflict naming the blocking predecessor and the
+        #      shortfall, so the user can see what to change rather than wonder why their
+        #      date vanished.
+        if a.pinned_start and not a.milestone:
+            want = a.pinned_start
+            if want >= a.es:
+                a.es = cal.next_working(want, a.exposed)
+                a.ef = cal.add_work_days(a.es, a.work_days, a.exposed)
+                a.pin_conflict = ""
+            else:
+                short = (a.es - want).days
+                blocker = acts[a.driver].name if a.driver and a.driver in acts else "its predecessors"
+                hard = next((d for d in a.deps if d.hard and d.pred == a.driver), None)
+                if hard:
+                    a.pin_conflict = (
+                        f"{want.isoformat()} is {short} day{'s' if short != 1 else ''} too "
+                        f"early and cannot be granted: {blocker} is followed by a "
+                        f"code-mandated wait ({hard.reason or 'IS 456'}). That period is "
+                        "curing or prop removal and no instruction shortens it.")
+                else:
+                    a.pin_conflict = (
+                        f"{want.isoformat()} is {short} day{'s' if short != 1 else ''} "
+                        f"earlier than {blocker} allows. Move that predecessor, or pin "
+                        "this no earlier than " + a.es.isoformat() + ".")
+
+        if a.pinned_finish and not a.milestone:
+            want = a.pinned_finish
+            if want >= a.ef:
+                a.ef = cal.next_working(want, a.exposed)
+                a.es = cal.sub_work_days(a.ef, a.work_days, a.exposed)
+                if a.pinned_start and a.es < a.pinned_start:
+                    a.es = a.pinned_start
+            else:
+                short = (a.ef - want).days
+                a.pin_conflict = (
+                    (a.pin_conflict + " ") if a.pin_conflict else "") + (
+                    f"A finish of {want.isoformat()} is {short} day"
+                    f"{'s' if short != 1 else ''} sooner than {a.work_days} working days "
+                    "from the earliest possible start allows.")
 
 
 def _latest_pred(cal: WorkCalendar, succ_time: date, lag: float, exposed: bool) -> date:
@@ -565,6 +631,13 @@ class ScheduleConfig:
     # predecessors so the chain survives; anything a code-mandated lag hangs off is
     # refused (see apply_task_edits).
     excluded_tasks: Tuple[str, ...] = ()
+    # Per-task user edits, keyed by activity id. Every field optional; absent means "use
+    # the generated value", so the override layer starts empty and nothing renders blank.
+    #   {name, work_days, crew, cost, start, finish, order}
+    # The generator always runs first and these are applied on top of its output -- edit
+    # only the crew and the days still recompute from the quantity, which is the arithmetic
+    # that makes this a planning engine rather than a spreadsheet.
+    task_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     blockwork_lag_floors: int = 2       # blockwork trails the structure by this many floors
     finishing_lag_floors: int = 2       # finishes trail blockwork likewise
     mobilisation_days: int = 10
@@ -610,6 +683,7 @@ class ScheduleConfig:
                 "max_crew_multiplier": self.max_crew_multiplier,
                 "extra_tasks": [dict(t) for t in self.extra_tasks],
                 "excluded_tasks": list(self.excluded_tasks),
+                "task_overrides": {k: dict(v) for k, v in self.task_overrides.items()},
                 "blockwork_lag_floors": self.blockwork_lag_floors,
                 "finishing_lag_floors": self.finishing_lag_floors,
                 "mobilisation_days": self.mobilisation_days,
@@ -908,15 +982,111 @@ def apply_task_edits(acts: List[Activity],
             after = ""
         days = max(1, int(spec.get("days") or 1))
         crew = max(1, int(spec.get("crew") or 1))
+        order = spec.get("order")
         a = Activity(
             id=f"custom_{i}", name=name, phase=str(spec.get("phase") or "Pre-construction"),
             trade=str(spec.get("trade") or ""), work_days=days, crew=crew,
             cost=float(spec.get("cost") or 0), custom=True, removable=True,
+            # A new task carries the position the user dropped it at. Without this it lands
+            # wherever a date tie puts it -- which is why adding "Survey" to Pre-construction
+            # appeared third, behind two other tasks that also start on day zero.
+            order=int(order) if order is not None else None,
             deps=[Dep(after or "start")])
         acts.append(a)
         by_id[a.id] = a
 
     return acts, warnings
+
+
+def apply_task_overrides(acts: List[Activity], cfg: ScheduleConfig) -> List[Dict[str, str]]:
+    """Lay the user's per-task edits over the generated values.
+
+    Precedence, applied here and reported to the user as a legend:
+
+        a pinned date  >  an edited Days  >  an edited Crew  >  the generated figure
+
+    Crew is the interesting one. Editing it alone recomputes Days from
+    quantity / (output x crew) -- the arithmetic that makes this an engine rather than a
+    spreadsheet. Editing Days as well means the user has asserted a duration, so Days
+    wins and the crew change moves only labour cost.
+
+    Dates are recorded as pins here, not applied: honouring one needs the whole network,
+    so `_apply_pins` does that inside the CPM where the dependency times are known.
+    """
+    warnings: List[Dict[str, str]] = []
+    overrides = cfg.task_overrides or {}
+    if not overrides:
+        return warnings
+
+    by_id = {a.id: a for a in acts}
+    for aid, ov in overrides.items():
+        a = by_id.get(aid)
+        if not a or not isinstance(ov, dict):
+            continue
+
+        if ov.get("name"):
+            a.generated["name"] = a.name
+            a.name = str(ov["name"])
+            a.edited["name"] = True
+
+        if ov.get("order") is not None:
+            try:
+                a.order = int(ov["order"])
+            except (TypeError, ValueError):
+                pass
+
+        has_days = ov.get("work_days") not in (None, "")
+        has_crew = ov.get("crew") not in (None, "")
+
+        if has_crew:
+            try:
+                crew = max(1, int(ov["crew"]))
+            except (TypeError, ValueError):
+                crew = a.crew
+            a.generated["crew"] = a.crew
+            a.crew = crew
+            a.edited["crew"] = True
+            # Days recompute from the quantity unless the user also asserted a duration.
+            if not has_days and a.quantity > 0 and a.output_per_day > 0 and not a.milestone:
+                a.generated["work_days"] = a.work_days
+                a.work_days = max(1, math.ceil(a.quantity / (a.output_per_day * crew)))
+                a.edited["work_days_from_crew"] = True
+
+        if has_days and not a.milestone:
+            try:
+                days = max(1, int(ov["work_days"]))
+            except (TypeError, ValueError):
+                days = a.work_days
+            a.generated.setdefault("work_days", a.work_days)
+            a.work_days = days
+            a.edited["work_days"] = True
+            a.edited.pop("work_days_from_crew", None)
+            # The productivity the user just assumed, so they can see it.
+            if a.quantity > 0 and a.crew > 0:
+                a.edited["implied_output_per_day"] = round(
+                    a.quantity / (days * a.crew), 2)
+
+        if ov.get("cost") not in (None, ""):
+            try:
+                a.generated["cost"] = a.cost
+                a.cost = float(ov["cost"])
+                a.edited["cost"] = True
+            except (TypeError, ValueError):
+                pass
+
+        for key, attr in (("start", "pinned_start"), ("finish", "pinned_finish")):
+            raw = ov.get(key)
+            if not raw:
+                continue
+            try:
+                setattr(a, attr, date.fromisoformat(str(raw)))
+                a.edited[key] = True
+            except ValueError:
+                warnings.append({"severity": "info", "text":
+                                 f'"{raw}" is not a date the programme could read, so '
+                                 f'{a.name} kept its calculated {key}.'})
+
+    return warnings
 
 
 # ---------------------------------------------------------------- safety audit
@@ -954,6 +1124,52 @@ def audit_safety(acts: List[Activity], cfg: ScheduleConfig, span_m: float) -> Li
     return findings
 
 
+def audit_scheduled_dates(acts: List[Activity], cfg: ScheduleConfig,
+                          span_m: float) -> List[Dict[str, Any]]:
+    """Second safety pass, on the DATES the CPM produced rather than the declared lags.
+
+    `audit_safety` checks that every code-mandated lag is long enough. That is the right
+    check for a generated programme, where dates follow from lags -- but a user-pinned date
+    is applied to the dates directly, so a lag can be correct while the realised gap is
+    not. `_forward` refuses such a pin, and this exists so that a future path which
+    forgets to cannot ship an unsafe programme silently.
+
+    Belt and braces on purpose: this is the one class of error in the module where being
+    wrong means props come out early.
+    """
+    findings: List[Dict[str, Any]] = []
+    required, why = prop_removal_days(span_m, cfg.blended_cement)
+    by_id = {a.id: a for a in acts}
+    for a in acts:
+        if a.es is None or a.milestone:
+            continue
+        for d in a.deps:
+            if not d.hard:
+                continue
+            p = by_id.get(d.pred)
+            if p is None or p.ef is None:
+                continue
+            minimum = 0.0
+            if "slabcast" in d.pred and ("_fw_" in a.id or "_block_" in a.id):
+                minimum = required
+            elif "curing" in (d.reason or "").lower() or "Cl. 13.5" in (d.reason or ""):
+                minimum = CURING_MIN_DAYS_BLENDED if cfg.blended_cement else CURING_MIN_DAYS
+            if not minimum:
+                continue
+            actual = (a.es - p.ef).days
+            if actual < minimum - 1e-9:
+                findings.append({
+                    "severity": "critical", "activity": a.id, "predecessor": d.pred,
+                    "given_days": actual, "required_days": minimum,
+                    "text": (f"'{a.name}' is scheduled to start {actual:g} days after "
+                             f"'{p.name}' finishes, but {minimum:g} calendar days are the "
+                             f"code minimum. {why}. This is a date the programme was told "
+                             "to use, not one it calculated -- clear the pinned date on "
+                             "this task."),
+                })
+    return findings
+
+
 # ---------------------------------------------------------------- target date solving
 def solve_for_target(project: Dict[str, Any], analysis: Dict[str, Any], cfg: ScheduleConfig,
                      start: date, cal: WorkCalendar, target: date) -> Dict[str, Any]:
@@ -984,6 +1200,7 @@ def solve_for_target(project: Dict[str, Any], analysis: Dict[str, Any], cfg: Sch
         cfg.crew_multipliers = mults
         acts, _ = build_activities(project, analysis, cfg)
         acts, _ = apply_task_edits(acts, cfg)   # the user's own tasks count toward the date
+        apply_task_overrides(acts, cfg)         # and so do their edits to the durations
         return project_finish(acts, start, cal)
 
     try:
@@ -1175,6 +1392,8 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
         acts, warnings = build_activities(project, analysis, cfg)
         acts, edit_warnings = apply_task_edits(acts, cfg)
         warnings += edit_warnings
+        # The generator has run; now the user's edits go on top of its output.
+        warnings += apply_task_overrides(acts, cfg)
 
         eng = project.get("engineering") or {}
         span = cfg.slab_span_m or max(float(eng.get("grid_bay_x_m") or 0),
@@ -1182,6 +1401,8 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
         safety = audit_safety(acts, cfg, span)
 
         cpm = run_cpm(acts, start, cal, verify=not summary)
+        # Dates exist now, so the realised gaps can be checked as well as the lags.
+        safety += audit_scheduled_dates(acts, cfg, span)
         finish = cpm["finish"] - timedelta(days=1)
         prop_days, prop_why = prop_removal_days(span, cfg.blended_cement)
 
