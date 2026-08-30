@@ -1282,13 +1282,17 @@ async def project_activity(project_id: str, user: dict = Depends(get_current_use
 # ---------------------------------------------------------------- reports
 @api.get("/projects/{project_id}/reports/{report_type}")
 async def download_report(project_id: str, report_type: str, user: dict = Depends(get_current_user)):
-    if report_type not in reportlib.REPORT_TITLES:
+    # "all" is the merged set; a merged-away id still resolves to whatever absorbed it,
+    # so an old bookmark lands on the report carrying those numbers rather than a 400.
+    resolved = reportlib.MERGED_INTO.get(report_type, report_type)
+    if report_type != "all" and resolved not in reportlib.REPORT_TITLES:
         raise HTTPException(status_code=400, detail="Unknown report type")
     proj = await load_project(project_id, user)
     proj.pop("_access_role", None)
     base = engine.analyse(proj)
     eng = englib.analyse_engineering(proj, base)
-    pdf = reportlib.build_pdf(report_type, proj, base, eng)
+    pdf = (reportlib.build_all_pdf(proj, base, eng) if report_type == "all"
+           else reportlib.build_pdf(resolved, proj, base, eng))
     name = f"{proj.get('name', 'project').replace(' ', '_')}_{report_type}.pdf"
     import io
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",

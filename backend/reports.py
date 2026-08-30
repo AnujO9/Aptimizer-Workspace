@@ -14,20 +14,42 @@ BRAND = colors.HexColor("#2563EB")
 DARK = colors.HexColor("#0F172A")
 LIGHT = colors.HexColor("#F1F5F9")
 
+# Eleven reports, one per thing a reader actually asks for. Five were merged rather than
+# kept: they repeated numbers the survivor already carried, and a reader choosing between
+# two reports with the same figures picks wrong half the time.
+#
+#   utilities      -> water        (identical STP, tank and RWH sizing)
+#   quantity       -> boq          (quantities are the unpriced half of the bill)
+#   accessibility  -> compliance   (it is a compliance chapter, not a document)
+#   controls       -> compliance   (setbacks are checked, not designed, at this stage)
+#   parking        -> executive    (a client reads slots, not a parking document)
 REPORT_TITLES = {
-    "boq": "Bill of Quantities Report",
-    "cost": "Cost Estimation Report",
-    "quantity": "Quantity Estimation Report",
-    "parking": "Parking Planning Report",
-    "compliance": "Compliance Validation Report",
-    "utilities": "Utility Planning Report",
     "executive": "Executive Summary",
+    "site": "Site Analysis Report",
+    "compliance": "Compliance Validation Report",
+    "engineering": "IS / NBC Engineering Summary",
     "structural": "Structural Design Basis Report",
     "water": "Water & Sanitation Infrastructure Report",
     "fire": "Fire & Life Safety Compliance Report",
-    "accessibility": "Accessibility Compliance Report",
-    "engineering": "IS / NBC Engineering Summary",
+    "sustainability": "Sustainability & Carbon Report",
+    "boq": "BOQ & Quantities Report",
+    "cost": "Cost & Feasibility Report",
+    "programme": "Construction Programme Report",
 }
+
+# Merged ids still resolve, so an old link or a saved bookmark lands on the report that
+# now carries those numbers instead of a 400.
+MERGED_INTO = {
+    "utilities": "water",
+    "quantity": "boq",
+    "accessibility": "compliance",
+    "controls": "compliance",
+    "parking": "executive",
+}
+
+# The order a merged PDF reads in: site, then design, then verification, then commercial.
+ALL_ORDER = ["executive", "site", "compliance", "engineering", "structural", "water",
+             "fire", "sustainability", "boq", "cost", "programme"]
 
 
 def _styles():
@@ -86,7 +108,43 @@ def _checks_table(module):
     return _table(rows, [54 * mm, 22 * mm, 26 * mm, 16 * mm, 48 * mm], align_right_from=1)
 
 
+def _programme(project: dict, a: dict):
+    """The programme, or None. Imported here so reports never hard-depend on it."""
+    try:
+        import schedule as schedlib
+        plan = schedlib.plan_schedule(project, a, (project.get("schedule") or {}))
+        return plan if plan.get("ok") else None
+    except Exception:
+        return None
+
+
+def _finance(project: dict, a: dict):
+    try:
+        import finance as financelib
+        return financelib.analyse(project, a, project.get("finance"))
+    except Exception:
+        return None
+
+
+def _optimisers(project: dict, a: dict, eng: dict):
+    out = {}
+    try:
+        import optimise as optlib
+        out.update({k: v for k, v in optlib.analyse(project, a, eng).items()
+                    if isinstance(v, dict) and "current" in v})
+    except Exception:
+        pass
+    try:
+        import planopt as planoptlib
+        out.update({k: v for k, v in planoptlib.analyse(project, a).items()
+                    if isinstance(v, dict) and "current" in v})
+    except Exception:
+        pass
+    return out
+
+
 def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> bytes:
+    report_type = MERGED_INTO.get(report_type, report_type)
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
                             topMargin=16 * mm, bottomMargin=16 * mm)
@@ -102,8 +160,7 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
     areas, boq, cost = a["areas"], a["boq"], a["cost"]
     cur = cost["currency"]
 
-    if report_type in ("executive", "quantity", "cost", "boq", "compliance", "parking", "utilities",
-                       "structural", "water", "fire", "accessibility", "engineering"):
+    if report_type in REPORT_TITLES:
         el += [Paragraph("Key Project Metrics", ss["Sec"]), _kv([
             ("Plot Area (m²)", _n(areas["plot_area_sqm"])),
             ("Plot Area (acres)", _n(areas["plot_area_acres"])),
@@ -134,7 +191,7 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                       [["Equipment Total", "", "", "", _n(boq["equipment_total"])]],
                       col_widths=[60 * mm, 20 * mm, 26 * mm, 28 * mm, 33 * mm])]
 
-    if report_type == "quantity":
+    if report_type == "boq":
         el += [Paragraph("Estimated Quantities", ss["Sec"]),
                _table([["Material", "Unit", "Ratio", "Basis", "Quantity"]] +
                       [[q["label"], q["unit"], _n(q["ratio"]), q["basis"], _n(q["quantity"])]
@@ -226,7 +283,7 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                         "yes" if r["refuge_required"] else "—", r["status"].upper()] for r in m["floor_rows"]],
                       col_widths=[18 * mm, 24 * mm, 24 * mm, 30 * mm, 34 * mm, 26 * mm])]
 
-    if eng and report_type == "accessibility":
+    if eng and report_type == "compliance":
         m = eng["modules"]["accessibility"]
         el += [Paragraph(f"Accessibility — score {m['score']}% ({m['passed']}/{m['total']} clauses met)", ss["Sec"]),
                _checks_table(m),
@@ -248,6 +305,11 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
             ("Fire safety score (%)", _n(s["fire_score"])),
             ("NBC parking score (%)", _n(s["parking_score"])),
             ("Accessibility score (%)", _n(s["accessibility_score"])),
+            # m13 and m14. The summary claims to cover the engineering modules, so leaving
+            # carbon and plantation out of it would make it quietly wrong.
+            ("Embodied carbon (tCO2e)", _n(s.get("embodied_carbon_tco2e"))),
+            ("Embodied carbon (kgCO2e/m2)", _n(s.get("carbon_per_sqm_kg"))),
+            ("Trees required", _n(s.get("trees_required"))),
             ("Green rating", s["green_rating"]),
         ])]
         if eng["warnings"]:
@@ -290,10 +352,217 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                              "to include the site suitability scorecard.", ss["Sub"])]
 
 
+    # ---------------------------------------------------------------- programme
+    if report_type == "programme":
+        plan = _programme(project, a)
+        if not plan:
+            el += [Paragraph("Construction Programme", ss["Sec"]),
+                   Paragraph("The programme could not be generated for this project. Check "
+                             "that towers, floors and quantities are set.", ss["Sub"])]
+        else:
+            saf = plan.get("safety") or {}
+            el += [Paragraph("Programme Summary", ss["Sec"]), _kv([
+                ("Start", plan["start"]), ("Completion", plan["finish"]),
+                ("Duration (months)", _n(plan["duration_months"])),
+                ("Calendar days", _n(plan["duration_calendar_days"])),
+                ("Tasks", _n(plan.get("activity_count"))),
+                ("Floor cycle (days)", _n(saf.get("floor_cycle_days"))),
+            ])]
+            el += [Paragraph("Phase Breakdown", ss["Sec"]),
+                   _table([["Phase", "Start", "Finish", "Days", "Tasks", f"Cost ({cur})"]] +
+                          [[ph["phase"], ph["start"], ph["finish"], _n(ph["calendar_days"]),
+                            _n(ph["activities"]), _n(ph["cost"])] for ph in plan["phases"]],
+                          col_widths=[42 * mm, 26 * mm, 26 * mm, 18 * mm, 18 * mm, 34 * mm])]
+            crit = [x for x in plan.get("activities", []) if x.get("critical")][:20]
+            if crit:
+                el += [Paragraph("Critical Path (first 20 tasks)", ss["Sec"]),
+                       _table([["Task", "Start", "Finish", "Days"]] +
+                              [[x["name"], x["start"], x["finish"], _n(x["work_days"])]
+                               for x in crit],
+                              col_widths=[86 * mm, 26 * mm, 26 * mm, 26 * mm])]
+            if saf:
+                el += [Paragraph("Safety Basis (IS 456)", ss["Sec"]),
+                       Paragraph(f"The floor cycle cannot be compressed below "
+                                 f"{saf.get('prop_removal_days')} calendar days — "
+                                 f"{saf.get('governing_rule')}. Adding labour shortens every "
+                                 "other activity, never this one.", ss["Sub"])]
+            findings = (saf.get("findings") or [])
+            if findings:
+                el += [Paragraph("Safety Findings", ss["Sec"])] + \
+                      [Paragraph(f"<b>[{f['severity'].upper()}]</b> {f['text']}", ss["Sub"])
+                       for f in findings]
+
+    # ---------------------------------------------------------------- feasibility
+    if report_type == "cost":
+        fin = _finance(project, a)
+        if fin:
+            el += [Paragraph("Feasibility & Return", ss["Sec"]), _kv([
+                ("Gross revenue", _n(fin["revenue"]["gross"])),
+                ("Total project cost", _n(fin["cost"]["total"])),
+                ("Net profit", _n(fin["profit"]["net"])),
+                ("Margin (%)", _n(fin["profit"]["margin_pct"])),
+                ("Return on cost (%)", _n(fin["profit"]["roi_pct"])),
+                ("Annual IRR (%)", _n(fin["profit"]["irr_pct"])
+                 if fin["profit"]["irr_pct"] is not None else "not reachable"),
+                ("Cash positive (month)", fin["timing"]["payback_month"]
+                 if fin["timing"]["payback_month"] is not None else "never"),
+                ("Peak funding needed", _n(fin["timing"]["peak_funding_need"])),
+                ("Break-even sale rate (per sqft)", _n(fin["break_even"]["sale_rate_per_sqft"])),
+                ("Break-even flats", _n(fin["break_even"]["units"])),
+            ])]
+            el += [Paragraph("Revenue by Flat Type", ss["Sec"]),
+                   _table([["Type", "Flats", "Saleable (sqft)", f"Rate ({cur})", f"Revenue ({cur})"]] +
+                          [[r["type"].upper(), _n(r["units"]), _n(r["saleable_sqft"]),
+                            _n(r["rate_per_sqft"]), _n(r["revenue"])]
+                           for r in fin["revenue"]["by_type"]],
+                          col_widths=[36 * mm, 22 * mm, 38 * mm, 30 * mm, 41 * mm])]
+            flow = fin.get("cash_flow") or []
+            if flow:
+                every3 = [f for i, f in enumerate(flow) if i % 3 == 0]
+                el += [Paragraph("Cash Flow (every third month)", ss["Sec"]),
+                       _table([["Month", f"Out ({cur})", f"In ({cur})", f"Cumulative ({cur})"]] +
+                              [[f["month"], _n(f["outflow"]), _n(f["inflow"]), _n(f["cumulative"])]
+                               for f in every3],
+                              col_widths=[24 * mm, 46 * mm, 46 * mm, 51 * mm])]
+
+    # ---------------------------------------------------------------- site
+    if report_type == "site":
+        g = project.get("gis") or {}
+        if not g:
+            el += [Paragraph("Site Analysis", ss["Sec"]),
+                   Paragraph("No site analysis has been run. Open GIS Intelligence and run it "
+                             "to populate this report.", ss["Sub"])]
+        else:
+            t, fl = g.get("terrain") or {}, g.get("flood") or {}
+            el += [Paragraph("Terrain & Flood", ss["Sec"]), _kv([
+                ("Average slope (%)", _n(t.get("avg_slope_pct"))),
+                ("Slope class", t.get("slope_class", "-")),
+                ("Relief (m)", _n(t.get("relief_m"))),
+                ("Flood risk", fl.get("level", "-")),
+                ("Flood score", _n(fl.get("score"))),
+            ])]
+            fac = (g.get("sun") or {}).get("facades") or []
+            if fac:
+                el += [Paragraph("Sun & Orientation", ss["Sec"]),
+                       _table([["Facade", "Bearing", "Sun hours", "Guidance"]] +
+                              [[f["facade"], f"{f['bearing_deg']}°", _n(f["sun_hours_equinox"]),
+                                f["recommendation"]] for f in fac],
+                              col_widths=[32 * mm, 20 * mm, 22 * mm, 90 * mm], align_right_from=4)]
+            acc = g.get("accessibility") or {}
+            if acc:
+                el += [Paragraph("Access", ss["Sec"]),
+                       Paragraph(str(acc.get("summary") or acc.get("grade") or "-"), ss["Sub"])]
+            suit = g.get("suitability")
+            if suit:
+                el += [Paragraph(f"Suitability — {suit['score']}% ({suit['grade']})", ss["Sec"]),
+                       _table([["Factor", "Score", "Weight", "Contribution"]] +
+                              [[b["factor"], _n(b["score"]), f"{b['weight_pct']}%", _n(b["contribution"])]
+                               for b in suit.get("breakdown", [])],
+                              col_widths=[75 * mm, 26 * mm, 26 * mm, 33 * mm])]
+            solar = g.get("solar")
+            if solar:
+                el += [Paragraph("Rooftop Solar Potential", ss["Sec"]), _kv([
+                    ("Installable (kWp)", _n(solar["installable_kwp"])),
+                    ("Annual generation (kWh)", _n(solar["annual_yield_kwh"])),
+                    ("Annual saving", _n(solar["annual_saving_inr"])),
+                    ("Payback (years)", _n(solar["payback_years"])),
+                ])]
+
+    # ---------------------------------------------------------------- sustainability
+    if eng and report_type == "sustainability":
+        mods = eng.get("modules") or {}
+        green, carbon, trees = mods.get("green"), mods.get("carbon"), mods.get("trees")
+        if green:
+            el += [Paragraph("Green Rating", ss["Sec"]),
+                   _kv([(o["label"], o["value"]) for o in green["outputs"]])]
+        if carbon:
+            el += [Paragraph("Embodied Carbon", ss["Sec"]),
+                   _kv([(o["label"], f"{o['value']} {o['unit']}".strip())
+                        for o in carbon["outputs"]]),
+                   _table([["Material", "Quantity", "Unit", "Factor", "tCO2e", "Share"]] +
+                          [[m["label"], _n(m["quantity"]), m["unit"], _n(m["factor"]),
+                            _n(m["tco2e"]), f"{m['share_pct']}%"]
+                           for m in carbon["materials"]],
+                          col_widths=[48 * mm, 26 * mm, 16 * mm, 22 * mm, 24 * mm, 22 * mm])]
+            if carbon.get("unpriced"):
+                el += [Paragraph("Not carried in the carbon figure: "
+                                 + ", ".join(carbon["unpriced"])
+                                 + " — no defensible coefficient.", ss["Sub"])]
+        if trees:
+            el += [Paragraph("Plantation Plan", ss["Sec"]),
+                   _kv([(o["label"], f"{o['value']} {o['unit']}".strip())
+                        for o in trees["outputs"]]),
+                   _table([["Zone", "Area (m²)", "Trees", "Species"]] +
+                          [[z["zone"], _n(z["area_sqm"]), _n(z["trees"]),
+                            ", ".join(sp["species"].split(" (")[0] for sp in z["species"])]
+                           for z in trees["zones"]],
+                          col_widths=[42 * mm, 24 * mm, 18 * mm, 74 * mm], align_right_from=4)]
+        solar = (project.get("gis") or {}).get("solar")
+        if solar:
+            el += [Paragraph("Rooftop Solar", ss["Sec"]), _kv([
+                ("Installable (kWp)", _n(solar["installable_kwp"])),
+                ("Annual generation (kWh)", _n(solar["annual_yield_kwh"])),
+                ("CO2 avoided (t/yr)", _n(solar["co2_avoided_tonnes_per_yr"])),
+            ])]
+
     el += [Spacer(1, 10), Paragraph("Generated by Aptimizer — figures are estimates based on configurable "
                                     "thumb-rule ratios and project rule sets.", ss["Sub"])]
     doc.build(el)
     return buf.getvalue()
+
+
+def build_all_pdf(project: dict, a: dict, eng: dict = None) -> bytes:
+    """Every report in one document, behind a contents page.
+
+    Built by concatenating the individual PDFs with pypdf rather than by assembling one
+    giant story: each report already knows how to lay itself out, and rebuilding that
+    inline would leave two definitions of every section to keep in step.
+    """
+    from pypdf import PdfWriter, PdfReader
+
+    writer = PdfWriter()
+
+    # Contents page, generated the same way the reports are so it matches them.
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=16 * mm, bottomMargin=16 * mm)
+    ss = _styles()
+    el = [
+        Paragraph("APTIMIZER", ParagraphStyle("brand", fontSize=10, textColor=BRAND, spaceAfter=2)),
+        Paragraph("Complete Project Report Set", ss["H"]),
+        Paragraph(f"Project: {project.get('name', '')} &nbsp;|&nbsp; Client: {project.get('client', '-')} "
+                  f"&nbsp;|&nbsp; Location: {project.get('location', '-')} &nbsp;|&nbsp; "
+                  f"Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}", ss["Sub"]),
+        Spacer(1, 10),
+        Paragraph("Contents", ss["Sec"]),
+    ]
+
+    built = []
+    for key in ALL_ORDER:
+        try:
+            built.append((key, build_pdf(key, project, a, eng)))
+        except Exception:
+            # One report failing must not cost the reader the other ten.
+            continue
+
+    page = 2                       # the contents page itself is page 1
+    rows = [["#", "Report", "Page"]]
+    for i, (key, pdf) in enumerate(built, 1):
+        rows.append([str(i), REPORT_TITLES[key], str(page)])
+        page += len(PdfReader(io.BytesIO(pdf)).pages)
+    el += [_table(rows, col_widths=[14 * mm, 130 * mm, 20 * mm], align_right_from=3)]
+    el += [Spacer(1, 10),
+           Paragraph("Generated by Aptimizer — figures are estimates based on configurable "
+                     "thumb-rule ratios and project rule sets.", ss["Sub"])]
+    doc.build(el)
+
+    writer.append(PdfReader(io.BytesIO(buf.getvalue())))
+    for _key, pdf in built:
+        writer.append(PdfReader(io.BytesIO(pdf)))
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def build_boq_excel(project: dict, a: dict) -> bytes:

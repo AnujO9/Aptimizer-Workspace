@@ -6,19 +6,23 @@ import { AiPanel } from "../components/AiPanel";
 import { Button } from "../components/ui/button";
 import { int, money, num } from "../lib/format";
 
+// Eleven reports, one per thing a reader asks for. Five were merged rather than kept --
+// they repeated numbers the survivor already carried, and a reader choosing between two
+// reports showing the same figures picks wrong half the time:
+//   Utility -> Water & Sanitation, Quantity -> BOQ, Accessibility -> Compliance,
+//   Setbacks & Controls -> Compliance, Parking -> Executive Summary.
 const REPORTS = [
-  ["executive", "Executive Summary", "One-page overview across every module"],
-  ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility and green rating"],
+  ["executive", "Executive Summary", "Scale, cost, compliance, parking and site intelligence in one document"],
+  ["site", "Site Analysis", "Terrain, flood risk, access, sun path, suitability and solar potential"],
+  ["compliance", "Compliance Validation", "Rule-by-rule pass/fail, including accessibility and development controls"],
+  ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility, carbon and plantation"],
   ["structural", "Structural Design Basis", "IS 875 loads, IS 1893 base shear, foundation, mix design, column grid"],
-  ["water", "Water & Sanitation Infrastructure", "IS 1172 demand, sump/OHT, STP, storm drainage and RWH"],
+  ["water", "Water & Sanitation", "IS 1172 demand, sump and OHT, STP, storm drainage, RWH and plant rooms"],
   ["fire", "Fire & Life Safety", "NBC Part 4 clause-by-clause checks with a per-floor checklist"],
-  ["accessibility", "Accessibility Compliance", "NBC Part 3 / RPwD checks with parking accessibility"],
-  ["boq", "BOQ Report", "Material, labour and equipment schedules"],
-  ["cost", "Cost Report", "Cost heads, cost per flat and per m²"],
-  ["quantity", "Quantity Report", "Thumb-rule ratios and computed quantities"],
-  ["parking", "Parking Report", "Required vs provided, allocation and ramp checks"],
-  ["compliance", "Compliance Report", "Rule-by-rule pass/fail with violations"],
-  ["utilities", "Utility Report", "Water, tanks, STP/WTP, RWH and plant rooms"],
+  ["sustainability", "Sustainability & Carbon", "Green rating, embodied carbon by material, plantation plan and rooftop solar"],
+  ["boq", "BOQ & Quantities", "Material, labour and equipment schedules with the quantities behind them"],
+  ["cost", "Cost & Feasibility", "Cost heads, cost per flat, revenue, margin, ROI, IRR, payback and cash flow"],
+  ["programme", "Construction Programme", "Phase table, critical path, floor cycle and the IS 456 safety basis"],
 ];
 
 export default function ReportsModule({ project, analysis, projectId, readOnly, setProject }) {
@@ -53,6 +57,23 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
           ))}
         </div>
       </Section>
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-[11px] text-slate-500 max-w-xl">
+          Eleven reports, one per subject. Every module is represented — quantities sit
+          inside the BOQ, accessibility and development controls inside Compliance, and
+          utility sizing inside Water &amp; Sanitation, because in each case the two
+          documents carried the same figures.
+        </p>
+        <Button
+          className="rounded-sm"
+          data-testid="download-all-reports"
+          onClick={() => dl(`/projects/${projectId}/reports/all`,
+            `${project.name.replace(/\s+/g, "_")}_all_reports.pdf`)}>
+          <Download className="h-3.5 w-3.5 mr-1.5" />
+          Download all as one PDF
+        </Button>
+      </div>
 
       <div className="grid gap-px bg-slate-200 border border-slate-200 md:grid-cols-2">
         {REPORTS.map(([key, title, desc]) => (
