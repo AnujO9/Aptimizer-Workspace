@@ -22,6 +22,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import ai as ailib
 import aptcontext as aptlib
+import aptspeed as speedlib
 import citations as citelib
 import auth as authlib
 import engine
@@ -912,13 +913,46 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
     if not messages or messages[-1].get("role") != "user":
         raise HTTPException(status_code=400, detail="Send at least one user message")
 
-    an = engine.analyse(proj)
-    eng = englib.analyse_engineering(proj, an)
-    context = aptlib.build(proj, an, eng)
+    question = str(messages[-1]["content"])
+    tier = speedlib.classify(question)
+    timer = speedlib.Timer()
+
+    # Tier `none`: a greeting needs no project data and no model call. This is the whole
+    # point of the intent gate -- "hi" used to run fourteen engineering modules, the
+    # programme and eleven optimisers before saying hello.
+    if tier == speedlib.NONE:
+        text = (speedlib.CAPABILITY if speedlib.is_capability_question(question)
+                else speedlib.GREETING)
+        reply = {"role": "assistant", "content": text, "model": "local",
+                 "provider": "aptimizer", "at": now_iso(), "tier": tier,
+                 "unverified_citations": [], "unconfirmed_clauses": [],
+                 "verified_citations": []}
+        thread = (messages + [reply])[-CHAT_TURNS_STORED:]
+        await db.projects.update_one({"_id": oid(project_id)},
+                                     {"$set": {"apt_thread": thread}})
+        logger.info("apt.context project=%s tier=none chars=0 prep_ms=%s",
+                    project_id, timer.ms)
+        return {"reply": reply, "thread": thread, "context_chars": 0,
+                "tier": tier, "prep_ms": timer.ms}
+
+    # Engineering is the expensive half, so the light tier never computes it. Both halves
+    # are cached on the project's updated_at, so a run of questions about an unchanged
+    # project pays for the analysis once.
+    full = tier == speedlib.FULL
+    an, eng = speedlib.cached_analysis(proj, engine.analyse,
+                                       englib.analyse_engineering,
+                                       need_engineering=full)
+    timer.mark("analysis")
+    context = speedlib.cached_context(
+        proj, tier,
+        (lambda: aptlib.build(proj, an, eng)) if full
+        else (lambda: speedlib.light_context(proj, an)))
+    timer.mark("context")
 
     serialised = ailib.context_block(context)
-    logger.info("apt.context project=%s chars=%d approx_tokens=%d",
-                project_id, len(serialised), len(serialised) // 4)
+    logger.info("apt.context project=%s tier=%s chars=%d approx_tokens=%d prep_ms=%s %s",
+                project_id, tier, len(serialised), len(serialised) // 4,
+                timer.ms, timer.marks)
 
     recent = messages[-CHAT_TURNS_SENT:]
     transcript = "\n\n".join(f'{m["role"].upper()}: {m["content"]}' for m in recent)
@@ -927,6 +961,7 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
             ailib.PROMPTS["chat"],
             "Project state:\n\n" + serialised + "\n\nConversation:\n\n" + transcript,
             session_hint=f"chat-{project_id}",
+            prefer_fast=not full,          # light questions do not need the strong model
         )
     except ailib.AIUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -935,21 +970,24 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
 
     # Citation guard. The model is given the registry to cite from; this checks what came
     # back against it. Unresolved references are returned, never quietly stripped -- a
-    # clean answer with a hole in it is worse than a flagged one.
+    # clean answer with a hole in it is worse than a flagged one. This runs on EVERY
+    # model-generated answer regardless of tier: no speed optimisation may skip it.
     cites = citelib.verify(result["text"])
     reply = {"role": "assistant", "content": result["text"],
              "model": result["model"], "provider": result["provider"],
-             "at": now_iso(),
+             "at": now_iso(), "tier": tier,
              "unverified_citations": cites["unverified"],
              "unconfirmed_clauses": cites["code_only"],
              "verified_citations": cites["resolved"]}
 
+    # Storing the thread must NOT bump updated_at: that field is the analysis cache key,
+    # so touching it here would invalidate the cache on every single message and undo the
+    # saving this route was just rewritten to get. A conversation is not a design change.
     thread = (messages + [reply])[-CHAT_TURNS_STORED:]
-    await db.projects.update_one(
-        {"_id": oid(project_id)},
-        {"$set": {"apt_thread": thread, "updated_at": now_iso()}})
-    return {"reply": reply, "thread": thread,
-            "context_chars": len(serialised)}
+    await db.projects.update_one({"_id": oid(project_id)},
+                                 {"$set": {"apt_thread": thread}})
+    return {"reply": reply, "thread": thread, "context_chars": len(serialised),
+            "tier": tier, "prep_ms": timer.ms}
 
 
 @api.get("/projects/{project_id}/ai/chat")

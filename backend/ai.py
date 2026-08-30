@@ -270,11 +270,19 @@ async def _openai_compatible_generate(key: str, base_url: str, models: list,
     return await _with_retries(models, call, label)
 
 
-async def generate_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer") -> dict:
+async def generate_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer",
+                            prefer_fast: bool = False) -> dict:
     """Run one prompt and return {"text", "model", "provider"}.
 
     `system` sets the role and output shape; `prompt` carries the data. Raises
     AIUnavailable when nothing is configured and AIFailed when the provider errors.
+
+    `prefer_fast` reorders the model chain to try the smaller model first. The fallback
+    chain is already ordered strongest-first, so this simply inverts it for work that does
+    not need the strong model -- a light chat answer about how many towers there are. It
+    reorders rather than replaces, so if the fast model is unavailable the strong one still
+    answers and nothing fails. Never use it for derivations or clause work: those are
+    exactly where a weaker model invents a plausible clause number.
     """
     p = provider()
     if not p["configured"]:
@@ -282,6 +290,8 @@ async def generate_markdown(system: str, prompt: str, *, session_hint: str = "ap
 
     name = p["provider"]
     chain = [p["model"]] + [m for m in _fallback_models(name) if m != p["model"]]
+    if prefer_fast and len(chain) > 1:
+        chain = chain[1:] + chain[:1]
 
     if name in ("grok", "groq"):
         try:
