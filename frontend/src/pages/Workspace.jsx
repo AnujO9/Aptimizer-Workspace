@@ -69,6 +69,9 @@ const EDITABLE = [
   "name", "client", "location", "plot_reference", "status", "plot", "towers", "parking", "config",
   "quantity_ratios", "rates", "labour_rates", "equipment_rates", "utility_config", "compliance_rules",
   "engineering",
+  // The programme config holds the user's per-task edits; without it a reload silently
+  // discards them and the table quietly reverts to the generated plan.
+  "schedule",
 ];
 
 export default function Workspace() {

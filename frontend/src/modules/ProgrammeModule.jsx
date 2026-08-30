@@ -17,6 +17,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { AiPanel } from "../components/AiPanel";
+import TaskRow from "../components/TaskRow";
 import { int, money, num } from "../lib/format";
 
 const PHASE_COLOR = {
@@ -106,6 +107,14 @@ function AddTaskRow({ byPhase, onAdd, disabled }) {
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
   const ready = draft.name.trim().length > 0;
 
+  // Default to following the last task in the chosen phase. Left blank the new task hangs
+  // off the project-start milestone, so its earliest start is day zero and it lands among
+  // the other day-zero tasks rather than at the end of the phase where the user expects
+  // it. "Project start" stays available, just no longer the silent default.
+  const phaseRows = byPhase[draft.phase] || [];
+  const lastInPhase = phaseRows.length ? phaseRows[phaseRows.length - 1] : null;
+  const after = draft.after === null ? "" : (draft.after || lastInPhase?.id || "");
+
   return (
     <div className="border-t border-slate-200 pt-3 mt-3 space-y-2" data-testid="prog-add-task">
       <p className="text-[11px] text-slate-500">
@@ -138,8 +147,8 @@ function AddTaskRow({ byPhase, onAdd, disabled }) {
           {/* Grouped by phase: a flat list of every task on a tower job is hundreds of
               options long and impossible to pick from. */}
           <select className="h-9 w-full rounded-sm border border-slate-200 bg-white px-2 text-sm"
-            value={draft.after} disabled={disabled} data-testid="prog-task-after"
-            onChange={(e) => set("after", e.target.value)}>
+            value={after} disabled={disabled} data-testid="prog-task-after"
+            onChange={(e) => set("after", e.target.value === "" ? null : e.target.value)}>
             <option value="">Project start</option>
             {Object.entries(byPhase).map(([phase, rows]) => (
               <optgroup key={phase} label={phase}>
@@ -149,7 +158,12 @@ function AddTaskRow({ byPhase, onAdd, disabled }) {
           </select>
         </div>
         <Button className="rounded-sm h-9" disabled={disabled || !ready} data-testid="prog-task-add"
-          onClick={() => { onAdd({ ...draft, name: draft.name.trim() }); setDraft(BLANK_TASK); }}>
+          onClick={() => {
+            // Land it at the end of its phase, which is where the form implies it goes.
+            onAdd({ ...draft, name: draft.name.trim(), after,
+                    order: phaseRows.length });
+            setDraft(BLANK_TASK);
+          }}>
           <Plus className="h-3.5 w-3.5 mr-1" />Add
         </Button>
       </div>
@@ -157,19 +171,23 @@ function AddTaskRow({ byPhase, onAdd, disabled }) {
   );
 }
 
-export default function ProgrammeModule({ project, projectId, readOnly, setProject }) {
+export default function ProgrammeModule({ project, projectId, readOnly, setProject, update }) {
   const [plan, setPlan] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState({});          // phase name -> task rows expanded
+  // Seeded from whatever was saved with the project, so a reload reopens the programme the
+  // user left rather than the generated one underneath it.
   const [cfg, setCfg] = useState({
-    start_date: new Date().toISOString().slice(0, 10),
+    ...(project?.schedule || {}),
+    start_date: (project?.schedule?.start_date) || new Date().toISOString().slice(0, 10),
     target_finish: "",          // empty = plan as the quantities fall out
     mobilisation_days: 10,
     blockwork_lag_floors: 2,
     crews: {},
     extra_tasks: [],
     excluded_tasks: [],
+    task_overrides: {},
   });
 
   // `next` lets an edit re-plan with the config it just produced rather than waiting a
@@ -192,8 +210,57 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
 
   useEffect(() => { run(); /* eslint-disable-next-line */ }, [projectId]);
 
-  const apply = (next) => { setCfg(next); run(next); };
+  const apply = (next) => {
+    setCfg(next);
+    run(next);
+    // Persist through the workspace's own autosave, so edits survive a reload and a saved
+    // version carries them into a revision comparison.
+    if (!readOnly) update?.((p) => { p.schedule = next; });
+  };
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
+
+  // One override object per task. Merging rather than replacing means editing the crew
+  // does not silently discard a pinned date the user set earlier.
+  const editTask = (id, patch) => {
+    const cur = cfg.task_overrides || {};
+    const merged = { ...(cur[id] || {}), ...patch };
+    // A null from a cleared date input means "unpin", so the generated date comes back.
+    Object.keys(patch).forEach((k) => { if (patch[k] === null) delete merged[k]; });
+    const next = { ...cur, [id]: merged };
+    if (Object.keys(merged).length === 0) delete next[id];
+    apply({ ...cfg, task_overrides: next });
+  };
+
+  const resetTask = (id) => {
+    const next = { ...(cfg.task_overrides || {}) };
+    delete next[id];
+    apply({ ...cfg, task_overrides: next });
+  };
+
+  const resetPhase = (phase) => {
+    const ids = new Set((byPhase[phase] || []).map((t) => t.id));
+    const next = Object.fromEntries(
+      Object.entries(cfg.task_overrides || {}).filter(([k]) => !ids.has(k)));
+    apply({ ...cfg, task_overrides: next });
+  };
+
+  const resetAll = () => apply({ ...cfg, task_overrides: {} });
+
+  // Dragging writes an `order` to every task in the phase. It is DISPLAY order only --
+  // dependencies decide when work happens, so nothing about the dates moves.
+  const [drag, setDrag] = useState(null);
+  const dropOn = (phase, targetId) => {
+    if (!drag || drag.phase !== phase || drag.id === targetId) return setDrag(null);
+    const rows = [...(byPhase[phase] || [])];
+    const from = rows.findIndex((r) => r.id === drag.id);
+    const to = rows.findIndex((r) => r.id === targetId);
+    if (from < 0 || to < 0) return setDrag(null);
+    rows.splice(to, 0, rows.splice(from, 1)[0]);
+    const next = { ...(cfg.task_overrides || {}) };
+    rows.forEach((r, i) => { next[r.id] = { ...(next[r.id] || {}), order: i }; });
+    setDrag(null);
+    apply({ ...cfg, task_overrides: next });
+  };
 
   const addTask = (t) => apply({ ...cfg, extra_tasks: [...cfg.extra_tasks, t] });
   const removeTask = (id) =>
@@ -211,6 +278,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
     return { t0, span, pct: (s) => ((day(s).getTime() - t0) / span) * 100 };
   }, [plan]);
 
+  const editCount = Object.keys(cfg.task_overrides || {}).length;
   const tasks = plan?.activities || [];
   // Tasks grouped under the phase they belong to, and an id -> name map so a dependency
   // reads as "Tower A: floor 3 slab" rather than "t0_slabcast_3".
@@ -221,7 +289,19 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
       n[t.id] = t.name;
       (g[t.phase] = g[t.phase] || []).push(t);
     }
-    for (const k of Object.keys(g)) g[k].sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+    // Display order: an explicit `order` first, then start date. Without the explicit
+    // order, tasks sharing a start date fall wherever the sort leaves them -- which is why
+    // a task added at the top of Pre-construction used to appear third.
+    for (const k of Object.keys(g)) {
+      g[k].sort((a, b) => {
+        const ao = a.order ?? null;
+        const bo = b.order ?? null;
+        if (ao !== null && bo !== null && ao !== bo) return ao - bo;
+        if (ao !== null && bo === null) return -1;
+        if (ao === null && bo !== null) return 1;
+        return (a.start || "").localeCompare(b.start || "");
+      });
+    }
     return { byPhase: g, nameOf: n };
   }, [tasks]);
 
@@ -361,13 +441,30 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
         title="Phase breakdown"
         description="Open a phase to read the tasks it is made of — what each one waits for, how long it takes, how many people it needs and what it costs. A phase's days are calendar days end to end; a task's are working days, so Sundays, holidays and monsoon stoppages are not counted. A red dot marks the critical path: a day lost there is a day lost on the completion date."
         testid="prog-phase-table"
-        actions={cfg.excluded_tasks.length > 0 && (
-          <Button variant="outline" className="rounded-sm h-8" onClick={restoreAll}
-            disabled={busy || readOnly} data-testid="prog-restore-tasks">
-            <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-            Restore {plural(cfg.excluded_tasks.length, "removed task")}
-          </Button>
-        )}
+        actions={
+          <div className="flex items-center gap-2">
+            {editCount > 0 && (
+              <>
+                <span className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-sm px-1.5 py-0.5"
+                  data-testid="prog-edit-count">
+                  {plural(editCount, "edit")}
+                </span>
+                <Button variant="outline" className="rounded-sm h-8" onClick={resetAll}
+                  disabled={busy || readOnly} data-testid="prog-reset-all">
+                  <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                  Reset all edits
+                </Button>
+              </>
+            )}
+            {cfg.excluded_tasks.length > 0 && (
+              <Button variant="outline" className="rounded-sm h-8" onClick={restoreAll}
+                disabled={busy || readOnly} data-testid="prog-restore-tasks">
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                Restore {plural(cfg.excluded_tasks.length, "removed task")}
+              </Button>
+            )}
+          </div>
+        }
       >
         {!plan?.phases?.length ? (
           <p className="text-sm text-slate-500">—</p>
@@ -421,57 +518,54 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
                       <TableCell />
                     </TableRow>,
                     ...(isOpen ? rows.map((t) => (
-                      <TableRow key={t.id} className="bg-slate-50/60"
-                        data-testid={`prog-task-${t.id}`}>
-                        <TableCell className="py-1 text-xs pl-8">
-                          <span className="flex items-center gap-1.5">
-                            {t.critical && (
-                              <span className="h-1.5 w-1.5 rounded-full bg-red-500 shrink-0"
-                                title="On the critical path — a day lost here is a day lost on the completion date" />
-                            )}
-                            <span className={t.critical ? "text-slate-900" : "text-slate-600"}>{t.name}</span>
-                            {t.custom && (
-                              <span className="text-[9px] uppercase tracking-wide text-blue-600 border border-blue-200 bg-blue-50 rounded-sm px-1">
-                                added
-                              </span>
-                            )}
-                          </span>
-                        </TableCell>
-                        <TableCell className="py-1 text-[11px] text-slate-500 max-w-[180px] truncate"
-                          title={(t.predecessors || []).map((p) => nameOf[p.id] || p.id).join(", ")}>
-                          {t.driver ? (nameOf[t.driver] || t.driver) : "—"}
-                        </TableCell>
-                        <TableCell className="py-1 text-[11px] text-right font-mono text-slate-600">{fmt(t.start)}</TableCell>
-                        <TableCell className="py-1 text-[11px] text-right font-mono text-slate-600">{fmt(t.finish)}</TableCell>
-                        <TableCell className="py-1 text-[11px] text-right font-mono text-slate-600"
-                          title="Working days — Sundays, holidays and monsoon stoppages are not counted">
-                          {t.milestone ? "—" : int(t.work_days)}
-                        </TableCell>
-                        <TableCell className="py-1 text-[11px] text-right font-mono text-slate-600">
-                          {t.milestone ? "—" : int(t.crew)}
-                        </TableCell>
-                        <TableCell className="py-1 text-[11px] text-right font-mono text-slate-600">
-                          {t.cost ? money(t.cost, "INR") : "—"}
-                        </TableCell>
-                        <TableCell className="py-1 text-right">
-                          {t.removable && !readOnly && (
-                            <button
-                              onClick={() => removeTask(t.id)}
-                              disabled={busy}
-                              className="text-slate-300 hover:text-red-600 transition-colors"
-                              title={`Remove "${t.name}" from the programme`}
-                              data-testid={`prog-task-remove-${t.id}`}
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </TableCell>
-                      </TableRow>
+                      <TaskRow
+                        key={t.id}
+                        t={t}
+                        nameOf={nameOf}
+                        readOnly={readOnly}
+                        busy={busy}
+                        onEdit={editTask}
+                        onResetRow={resetTask}
+                        onRemove={removeTask}
+                        dragging={drag?.id === t.id}
+                        onDragStart={() => setDrag({ id: t.id, phase: ph.phase })}
+                        onDragOver={(ev) => { if (drag?.phase === ph.phase) ev.preventDefault(); }}
+                        onDrop={() => dropOn(ph.phase, t.id)}
+                      />
                     )) : []),
                   ];
                 })}
               </TableBody>
             </Table>
+            <div className="mt-3 space-y-1 text-[10px] text-slate-500 leading-snug">
+              <p>
+                <span className="font-semibold text-slate-700">Every cell is editable.</span>{" "}
+                Click a task name to rename it; type over the days, crew or cost; set a date
+                to pin it. Edited cells carry a blue edge, and the reset arrow on a row puts
+                its generated values back.
+              </p>
+              <p>
+                <span className="font-semibold text-slate-700">What wins when edits
+                disagree:</span> a pinned date beats an edited Days, which beats an edited
+                Crew, which beats the generated figure. Change only the crew and the days
+                recalculate from the quantity; change the days as well and your duration
+                stands.
+              </p>
+              <p>
+                <span className="font-semibold text-slate-700">Dragging changes the order
+                you see, not the plan.</span> What happens when is set by what each task
+                waits for, so a row moved up the list keeps its dates.
+              </p>
+              <p>
+                A pinned date that arrives earlier than the work allows is refused, and the
+                row says which task is blocking it. Curing and prop-removal periods are
+                fixed by IS 456 and no pinned date shortens them.
+              </p>
+              <p>
+                An edited cost changes the phase and project totals but never the BOQ — the
+                variance line below reports the gap.
+              </p>
+            </div>
             {!readOnly && <AddTaskRow byPhase={byPhase} onAdd={addTask} disabled={busy} />}
             {plan.floats_verified === false && (
               <p className="text-[10px] text-slate-400 mt-2">

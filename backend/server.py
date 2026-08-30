@@ -289,7 +289,11 @@ async def patch_project(project_id: str, body: ProjectPatch, user: dict = Depend
     await load_project(project_id, user, write=True)
     allowed = {"name", "client", "location", "plot_reference", "status", "plot", "towers", "parking",
                "config", "quantity_ratios", "rates", "labour_rates", "equipment_rates",
-               "utility_config", "compliance_rules", "gis", "engineering", "society_amenities"}
+               "utility_config", "compliance_rules", "gis", "engineering", "society_amenities",
+               # The programme config carries the user's per-task edits, so it has to be
+               # saved with the project: a snapshot must reproduce the programme the user
+               # actually approved, not the generated one underneath it.
+               "schedule", "finance", "solar"}
     updates = {k: v for k, v in body.updates.items() if k in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
