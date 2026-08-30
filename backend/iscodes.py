@@ -261,6 +261,71 @@ GREEN_CHECKLIST = [
 GRIHA_BANDS = [(50, 1), (60, 2), (70, 3), (80, 4), (90, 5)]
 IGBC_BANDS = [(40, "Certified"), (50, "Silver"), (60, "Gold"), (75, "Platinum")]
 
+
+# ---------------------------------------------------------------- embodied carbon
+# Cradle-to-gate embodied carbon, kgCO2e per unit of the quantity the bill carries.
+# Indian production routes, which differ from European figures: cement is largely PPC
+# and blended, and roughly half of Indian rebar comes from the secondary (scrap/induction)
+# route, so steel here is well below the ~2.8 typical of primary blast-furnace steel.
+#
+# READ THIS BEFORE CHANGING THE CONCRETE FIGURE. The take-off derives cement, sand and
+# aggregate FROM the concrete volume (takeoff.structural_takeoff), so those three lines
+# ARE the concrete's constituents, not separate purchases. Concrete therefore carries
+# only what its constituents do not -- batching, transport and placing. Giving it a full
+# ready-mix coefficient on top of its own cement would count the clinker twice and roughly
+# double the project total.
+EMBODIED_CARBON = {
+    "cement":        {"factor": 42.5,  "unit": "bag",   "note": "OPC 53, 50 kg bag at 0.85 kgCO2e/kg"},
+    "steel":         {"factor": 2.0,   "unit": "kg",    "note": "Indian rebar, mixed primary and secondary route"},
+    "concrete":      {"factor": 15.0,  "unit": "m3",    "note": "batching, transport and placing only -- cement, sand and aggregate are counted on their own lines"},
+    "sand":          {"factor": 5.0,   "unit": "m3",    "note": "extraction and haulage"},
+    "aggregate":     {"factor": 6.0,   "unit": "m3",    "note": "crushing and haulage"},
+    "bricks":        {"factor": 0.28,  "unit": "no",    "note": "fired clay, Indian fixed-chimney kiln"},
+    "tiles":         {"factor": 18.0,  "unit": "sqm",   "note": "vitrified floor tile"},
+    "paint":         {"factor": 1.5,   "unit": "sqm",   "note": "emulsion, two coats"},
+    "waterproofing": {"factor": 5.0,   "unit": "sqm",   "note": "membrane and primer"},
+    "finishing":     {"factor": 8.0,   "unit": "sqm",   "note": "plaster and screed"},
+}
+
+# Benchmarks for residential construction in India, kgCO2e per m2 of built-up area.
+# Read as "at or above this threshold, the project is in this band"; below the first
+# threshold it is "low". A conventional RCC frame lands in the 300-450 range, so anything
+# under 300 means the structure is genuinely light or the take-off is understating it.
+CARBON_BENCHMARKS = [(300, "typical"), (450, "high"), (550, "very high")]
+
+# Rough sequestration credit for a mature urban tree, kgCO2e absorbed per year.
+TREE_SEQUESTRATION_KG_YR = 20.0
+
+
+# ---------------------------------------------------------------- plantation norms
+# Most Indian municipal building bye-laws require one tree per 80-100 m2 of open space;
+# 80 is the stricter and commoner figure, and several states tie the occupancy
+# certificate to it. Canopy target follows the National Forest Policy's 33% ambition
+# applied to the plot's own open space rather than to the whole site.
+TREE_NORMS = {
+    "sqm_open_space_per_tree": 80.0,
+    "canopy_cover_target_pct": 33.0,
+    "min_native_share_pct": 60.0,          # native stock survives without irrigation support
+    "avenue_spacing_m": 8.0,               # along internal roads and the perimeter ring
+}
+
+# Canopy diameter at maturity drives how many trees a given area can actually hold --
+# planting to the count norm without checking canopy is how a site ends up with trees
+# that never close. Root habit matters next to structures: aggressive rooters are kept
+# off the ring road and away from foundations.
+TREE_SPECIES = [
+    {"name": "Neem (Azadirachta indica)",        "native": True,  "canopy_m": 10.0, "zone": "open",   "roots": "moderate", "note": "hardy, evergreen, pest-repellent"},
+    {"name": "Peepal (Ficus religiosa)",         "native": True,  "canopy_m": 15.0, "zone": "open",   "roots": "aggressive", "note": "keep 8 m clear of foundations and drains"},
+    {"name": "Indian Almond (Terminalia catappa)", "native": True, "canopy_m": 9.0, "zone": "open",   "roots": "moderate", "note": "dense shade, seasonal leaf fall"},
+    {"name": "Gulmohar (Delonix regia)",         "native": False, "canopy_m": 11.0, "zone": "avenue", "roots": "moderate", "note": "flowering avenue tree, brittle in high wind"},
+    {"name": "Ashoka (Saraca asoca)",            "native": True,  "canopy_m": 4.0,  "zone": "buffer", "roots": "compact",  "note": "narrow crown, good screening along boundaries"},
+    {"name": "Jamun (Syzygium cumini)",          "native": True,  "canopy_m": 10.0, "zone": "open",   "roots": "moderate", "note": "fruiting, heavy evergreen shade"},
+    {"name": "Amaltas (Cassia fistula)",         "native": True,  "canopy_m": 8.0,  "zone": "avenue", "roots": "compact",  "note": "compact roots, safe near paving"},
+    {"name": "Champa (Plumeria alba)",           "native": False, "canopy_m": 5.0,  "zone": "amenity","roots": "compact",  "note": "ornamental, low water demand"},
+]
+
+
+
 # ---------------------------------------------------------------- city reference data
 # seismic zone (IS 1893 Annex E), basic wind speed m/s (IS 875-3 Annex A),
 # annual rainfall mm and 1-hour design rainfall intensity mm/hr (IMD / NBC)

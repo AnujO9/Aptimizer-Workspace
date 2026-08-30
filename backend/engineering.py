@@ -907,6 +907,209 @@ def m12_grid(project, base, e):
     }
 
 
+# ================================================================ 13. embodied carbon
+def m13_carbon(project, base, e, mix):
+    """Cradle-to-gate embodied carbon, multiplied through the bill the estimator sees.
+
+    The one thing to get right here is what NOT to count. The take-off derives cement,
+    sand and aggregate from the concrete volume, so those lines are the concrete's own
+    constituents. Concrete therefore carries batching and placing only -- see the note on
+    C.EMBODIED_CARBON. Counting a ready-mix coefficient as well would double the clinker,
+    which is most of the answer, and the total would be roughly twice the truth.
+    """
+    area = float(base["areas"]["builtup_area_sqm"] or 0)
+    items = base["quantities"]["items"]
+
+    rows = []
+    total_kg = 0.0
+    for it in items:
+        coeff = C.EMBODIED_CARBON.get(it["key"])
+        if not coeff:
+            continue                       # doors, windows, fixtures: no defensible figure
+        kg = float(it["quantity"] or 0) * coeff["factor"]
+        total_kg += kg
+        rows.append({
+            "key": it["key"], "label": it["label"],
+            "quantity": it["quantity"], "unit": it["unit"],
+            "factor": coeff["factor"], "factor_unit": f'kgCO2e/{coeff["unit"]}',
+            "basis": coeff["note"], "source": it.get("source", "ratio"),
+            "tco2e": round(kg / 1000.0, 2),
+        })
+    rows.sort(key=lambda r: r["tco2e"], reverse=True)
+    for r in rows:
+        r["share_pct"] = round(r["tco2e"] * 1000 / total_kg * 100, 1) if total_kg else 0.0
+
+    per_sqm = round(total_kg / area, 1) if area else 0.0
+    band = "low"
+    for threshold, name in C.CARBON_BENCHMARKS:
+        if per_sqm >= threshold:
+            band = name
+    priced = {r["key"] for r in rows}
+    unpriced = [it["label"] for it in items if it["key"] not in priced]
+
+    # Cement is the lever. Blended cement (PPC/PSC) cuts clinker roughly 30%, and the
+    # mix design module already knows which cement this project specified.
+    cement_row = next((r for r in rows if r["key"] == "cement"), None)
+    cement_share = cement_row["share_pct"] if cement_row else 0.0
+    blended_saving_t = round((cement_row["tco2e"] * 0.30), 1) if cement_row else 0.0
+    trees_equiv = int(total_kg / C.TREE_SEQUESTRATION_KG_YR) if total_kg else 0
+
+    warnings = []
+    if any(r["source"] == "ratio" for r in rows if r["key"] in ("concrete", "cement")):
+        warnings.append({"severity": "info", "text":
+                         "Structural quantities came from per-m2 ratios rather than the "
+                         "take-off, so the carbon figure is only as good as those ratios."})
+
+    return {
+        "id": "carbon", "title": "Embodied Carbon", "codes": ["IS 456:2000", "GRIHA v2019"],
+        "missing": [] if area else ["Built-up area (Plot & Site, Apartment Planning)"],
+        "warnings": warnings, "materials": rows, "unpriced": unpriced,
+        "derived": {"total_tco2e": round(total_kg / 1000.0, 2), "per_sqm_kg": per_sqm,
+                    "band": band, "cement_share_pct": cement_share,
+                    "blended_cement_saving_tco2e": blended_saving_t},
+        "outputs": [
+            out("Embodied carbon", round(total_kg / 1000.0, 1), "tCO2e", "griha",
+                "cradle to gate: making and delivering the materials, before any energy is used in the building"),
+            out("Per square metre", per_sqm, "kgCO2e/m2", "griha",
+                f"{band} for Indian residential RCC construction, where 300-450 is the usual range"),
+            out("Largest contributor", rows[0]["label"] if rows else "-", "", "griha",
+                f'{rows[0]["share_pct"]}% of the total' if rows else ""),
+            out("Cement share", cement_share, "%", "griha",
+                "clinker is the single biggest lever on this number"),
+            out("Saving from blended cement", blended_saving_t, "tCO2e", "griha",
+                "switching OPC to PPC or PSC cuts roughly 30% of cement carbon at equal strength"),
+            out("Equivalent mature trees, one year", trees_equiv, "nos", "griha",
+                "for scale only -- planting does not offset construction carbon in any real timeframe"),
+        ],
+        "recommendation": {
+            "label": "Embodied carbon",
+            "value": f'{round(total_kg / 1000.0, 1)} tCO2e, {per_sqm} kgCO2e/m2 ({band})',
+            "clause": C.clause("griha")},
+    }
+
+
+# ================================================================ 14. plantation
+def m14_trees(project, base, e, carbon):
+    """How many trees the open space owes, what they should be, and where they go.
+
+    Two numbers govern, and they disagree more often than not. The bye-law count (one
+    tree per 80 m2 of open space) is what the sanction is checked against; the canopy
+    target is what actually makes the site liveable. Planting to the count alone gives a
+    site full of trees whose crowns never close, so both are reported and the binding
+    one is named.
+    """
+    areas = base["areas"]
+    open_sqm = float(areas.get("open_space_sqm") or 0)
+    plot_sqm = float(areas.get("plot_area_sqm") or 0)
+    norms = C.TREE_NORMS
+
+    required = math.ceil(open_sqm / norms["sqm_open_space_per_tree"]) if open_sqm else 0
+    canopy_target_sqm = open_sqm * norms["canopy_cover_target_pct"] / 100.0
+
+    # Zones come from the generated site layout when there is one; otherwise the split is
+    # proportional and the payload says so.
+    layout = (project.get("site_layout") or {})
+    green_sqm = float(((layout.get("green") or {}).get("area_sqm")) or 0)
+    road_sqm = float(((layout.get("roads") or {}).get("total_area_sqm")) or 0)
+    have_layout = green_sqm > 0 or road_sqm > 0
+    if not have_layout:
+        green_sqm = open_sqm * 0.55
+        road_sqm = open_sqm * 0.25
+
+    zones = [
+        {"zone": "Landscape and lawns", "area_sqm": round(green_sqm, 1), "kind": "open",
+         "note": "large-canopy shade trees, spaced to close at maturity"},
+        {"zone": "Road and driveway verges", "area_sqm": round(road_sqm, 1), "kind": "avenue",
+         "note": "avenue planting at {} m centres, compact-rooted species only".format(
+             norms["avenue_spacing_m"])},
+        {"zone": "Boundary and setback strip",
+         "area_sqm": round(max(open_sqm - green_sqm - road_sqm, 0), 1), "kind": "buffer",
+         "note": "narrow-crown screening against neighbours and noise"},
+    ]
+
+    allocatable = sum(z["area_sqm"] for z in zones) or 1.0
+    plan = []
+    canopy_sqm = 0.0
+    for z in zones:
+        count = int(round(required * (z["area_sqm"] / allocatable)))
+        picks = ([s for s in C.TREE_SPECIES if s["zone"] == z["kind"]]
+                 or [s for s in C.TREE_SPECIES if s["zone"] == "open"])
+        per = [count // len(picks)] * len(picks)
+        for i in range(count - sum(per)):
+            per[i] += 1
+        rows = []
+        for s, n in zip(picks, per):
+            if n <= 0:
+                continue
+            crown = math.pi * (s["canopy_m"] / 2) ** 2 * n
+            canopy_sqm += crown
+            rows.append({"species": s["name"], "count": n, "native": s["native"],
+                         "canopy_m": s["canopy_m"], "canopy_sqm": round(crown, 1),
+                         "roots": s["roots"], "note": s["note"]})
+        plan.append({**z, "trees": count, "species": rows})
+
+    planted = sum(z["trees"] for z in plan)
+    native = sum(r["count"] for z in plan for r in z["species"] if r["native"])
+    native_pct = round(native / planted * 100, 1) if planted else 0.0
+    canopy_pct = round(canopy_sqm / open_sqm * 100, 1) if open_sqm else 0.0
+    avg_crown = (canopy_sqm / planted) if planted else 0.0
+    for_canopy = math.ceil(canopy_target_sqm / avg_crown) if avg_crown else 0
+    binding = "canopy cover" if for_canopy > required else "bye-law count"
+
+    seq = planted * C.TREE_SEQUESTRATION_KG_YR / 1000.0
+    embodied = float((carbon or {}).get("derived", {}).get("total_tco2e") or 0)
+    offset_years = int(embodied / seq) if seq else 0
+
+    warnings = []
+    if not have_layout:
+        warnings.append({"severity": "info", "text":
+                         "No site layout has been generated, so the zone split is "
+                         "proportional rather than measured. Generate the site layout to "
+                         "get real planting areas."})
+    if native_pct < norms["min_native_share_pct"]:
+        warnings.append({"severity": "info", "text":
+                         "Native stock is {}% of the planting, below the {}% that survives "
+                         "here without permanent irrigation support.".format(
+                             native_pct, norms["min_native_share_pct"])})
+
+    offset_note = ""
+    if offset_years:
+        offset_note = ("roughly {} years of growth to absorb the {} tCO2e already embodied "
+                       "in the materials -- worth doing, but not an offset").format(
+                           offset_years, embodied)
+
+    return {
+        "id": "trees", "title": "Plantation Plan",
+        "codes": ["Municipal building bye-laws", "National Forest Policy 1988"],
+        "missing": [] if open_sqm else ["Plot polygon and tower footprints"],
+        "warnings": warnings, "zones": plan, "species_library": C.TREE_SPECIES,
+        "derived": {"required": required, "for_canopy": for_canopy, "planted": planted,
+                    "canopy_pct": canopy_pct, "native_pct": native_pct,
+                    "binding": binding, "sequestration_tco2e_yr": round(seq, 1)},
+        "outputs": [
+            out("Open space to plant", round(open_sqm, 1), "m2", None,
+                "{}% of the plot".format(round(open_sqm / plot_sqm * 100, 1)) if plot_sqm else ""),
+            out("Trees required by bye-law", required, "nos", None,
+                "one per {} m2 of open space".format(norms["sqm_open_space_per_tree"])),
+            out("Trees needed for canopy target", for_canopy, "nos", None,
+                "to shade {}% of the open space once grown".format(norms["canopy_cover_target_pct"])),
+            out("Binding requirement", binding, "", None,
+                "plant to the larger of the two: the count satisfies the sanction, the "
+                "canopy is what makes the site liveable"),
+            out("Canopy once grown", canopy_pct, "% of open space", None,
+                "crowns assumed to close without overlapping"),
+            out("Native species share", native_pct, "%", None,
+                "target {}%".format(norms["min_native_share_pct"])),
+            out("Carbon absorbed", round(seq, 1), "tCO2e/yr", None, offset_note),
+        ],
+        "recommendation": {
+            "label": "Plantation",
+            "value": "{} trees, {}% native, {}% canopy once grown".format(
+                max(required, for_canopy), native_pct, canopy_pct),
+            "clause": None},
+    }
+
+
 # ================================================================ orchestrator
 def analyse_engineering(project, base):
     e = cfg(project)
@@ -922,9 +1125,11 @@ def analyse_engineering(project, base):
     access = m9_accessibility(project, base, e)
     green = m11_green(project, base, e, water, storm)
     grid = m12_grid(project, base, e)
+    carbon = m13_carbon(project, base, e, mix)
+    trees = m14_trees(project, base, e, carbon)
 
     modules = {m["id"]: m for m in [loads, seismic, foundation, mix, water, storm,
-                                    parking, fire, access, green, grid]}
+                                    parking, fire, access, green, grid, carbon, trees]}
     per_tower = {}
     for tl in loads.get("per_tower", []):
         per_tower[tl["id"]] = {"name": tl["name"], "loads": tl,
@@ -955,5 +1160,9 @@ def analyse_engineering(project, base):
             "parking_score": parking["score"],
             "accessibility_score": access["score"],
             "green_rating": green["recommendation"]["value"],
+            "embodied_carbon_tco2e": carbon["derived"]["total_tco2e"],
+            "carbon_per_sqm_kg": carbon["derived"]["per_sqm_kg"],
+            "trees_required": max(trees["derived"]["required"],
+                                  trees["derived"]["for_canopy"]),
         },
     }

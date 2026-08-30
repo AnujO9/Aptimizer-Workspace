@@ -32,6 +32,8 @@ const TABS = [
   // above compute. Keeping it in a separate sidebar entry is what once let the two show
   // different sump sizes for one project, so it belongs in this tab strip.
   ["utilities", "13 · Utilities Sizing"],
+  ["carbon", "14 · Embodied Carbon"],
+  ["trees", "15 · Plantation Plan"],
 ];
 
 const INPUTS = {

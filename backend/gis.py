@@ -445,6 +445,103 @@ def sun_path(lat, lng, orientation_deg):
     return {"latitude": lat, "longitude": lng, "orientation_deg": o, "paths": paths, "facades": facades}
 
 
+# ------------------------------------------------------------------ solar yield
+# Rooftop PV defaults for India. A flat roof needs tilt frames with row spacing to avoid
+# self-shading, which is why the area per kWp is roughly 10 m2 and not the ~5 m2 the bare
+# module area would suggest.
+SOLAR_DEFAULTS = {
+    "roof_usable_pct": 60.0,      # lifts, tanks, stairs, AC plant and access paths take the rest
+    "sqm_per_kwp": 10.0,          # tilted rows on a flat terrace
+    "performance_ratio": 0.78,    # soiling, heat derate, inverter and cable losses
+    "cost_per_kwp": 50000.0,      # INR, installed, grid-tied without battery
+    "tariff_per_kwh": 8.0,        # INR, displaced residential/common-area tariff
+    "degradation_pct_yr": 0.7,
+    "life_years": 25,
+}
+
+# Clear-sky beam transmittance in the ASHRAE/Meinel air-mass model. The clearness factor
+# scales that ideal down to what Indian sites actually see once monsoon cloud and dust are
+# in: clear-sky integration alone lands near 2400 kWh/m2/yr, while measured GHI across
+# most of India is 1700-2000.
+SOLAR_CLEARNESS = 0.80
+SOLAR_CONSTANT = 1353.0
+DIFFUSE_FRACTION = 0.14           # of the beam component on a horizontal plane
+
+# One representative day per month (the 15th), weighted by that month's length.
+_MONTH_DOY = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349]
+_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def annual_insolation(lat, lng):
+    """Annual global horizontal irradiation, kWh/m2/yr, from the same solar geometry the
+    sun path uses.
+
+    Integrated hourly over twelve representative days rather than all 8760 hours: the
+    declination barely moves within a month, so the extra 700-odd position calls buy
+    nothing a rooftop estimate can use.
+    """
+    monthly = []
+    for doy, days in zip(_MONTH_DOY, _MONTH_DAYS):
+        wh = 0.0
+        for step in range(48):                       # half-hourly, 00:00 -> 23:30
+            hour = step * 0.5
+            _, elev = solar_position(lat, lng, doy, hour)
+            if elev <= 3:                            # below this, air mass makes it noise
+                continue
+            am = 1.0 / math.sin(math.radians(elev))
+            beam = SOLAR_CONSTANT * (0.7 ** (am ** 0.678))
+            horiz = beam * math.sin(math.radians(elev))
+            wh += (horiz * (1 + DIFFUSE_FRACTION)) * 0.5    # W/m2 over half an hour
+        day_kwh = wh / 1000.0 * SOLAR_CLEARNESS
+        monthly.append({"days": days, "kwh_per_sqm_day": round(day_kwh, 2),
+                        "kwh_per_sqm_month": round(day_kwh * days, 1)})
+    annual = sum(m["kwh_per_sqm_month"] for m in monthly)
+    return {"annual_kwh_per_sqm": round(annual, 1),
+            "daily_average_kwh_per_sqm": round(annual / 365.0, 2),
+            "monthly": monthly}
+
+
+def solar_potential(lat, lng, roof_area_sqm, config=None):
+    """Installable rooftop PV, annual yield and simple payback.
+
+    Payback is against the tariff the generation displaces, undiscounted, and ignores any
+    subsidy or net-metering export price -- both vary by state and neither is knowable
+    from the project data.
+    """
+    cfg = {**SOLAR_DEFAULTS, **{k: v for k, v in (config or {}).items() if v is not None}}
+    ins = annual_insolation(lat, lng)
+    roof = max(float(roof_area_sqm or 0), 0.0)
+    usable = roof * cfg["roof_usable_pct"] / 100.0
+    kwp = usable / cfg["sqm_per_kwp"] if cfg["sqm_per_kwp"] else 0.0
+    # A 1 kWp array is rated at 1000 W/m2, so annual yield is simply the site's kWh/m2
+    # times the rating times the performance ratio.
+    yield_kwh = kwp * ins["annual_kwh_per_sqm"] * cfg["performance_ratio"]
+    capex = kwp * cfg["cost_per_kwp"]
+    saving = yield_kwh * cfg["tariff_per_kwh"]
+    payback = (capex / saving) if saving > 0 else None
+
+    # Straight-line degradation over the panel life.
+    life = int(cfg["life_years"])
+    deg = cfg["degradation_pct_yr"] / 100.0
+    lifetime_kwh = sum(yield_kwh * max(0.0, 1 - deg * y) for y in range(life))
+
+    return {
+        "insolation": ins,
+        "roof_area_sqm": round(roof, 2),
+        "usable_area_sqm": round(usable, 2),
+        "installable_kwp": round(kwp, 2),
+        "annual_yield_kwh": round(yield_kwh, 0),
+        "specific_yield_kwh_per_kwp": round(yield_kwh / kwp, 0) if kwp else 0,
+        "capex_inr": round(capex, 0),
+        "annual_saving_inr": round(saving, 0),
+        "payback_years": round(payback, 1) if payback else None,
+        "lifetime_kwh": round(lifetime_kwh, 0),
+        "lifetime_saving_inr": round(lifetime_kwh * cfg["tariff_per_kwh"], 0),
+        "co2_avoided_tonnes_per_yr": round(yield_kwh * 0.71 / 1000.0, 1),
+        "config": cfg,
+    }
+
+
 # ------------------------------------------------------------------ accessibility
 def accessibility(roads, transit, coords, road_edges):
     nearest = roads[0] if roads else None
@@ -573,6 +670,11 @@ async def analyse_site(project, radius_m=500):
     flood = flood_risk(terrain, features["water"])
     access = accessibility(features["roads"], features["transit"], coords, plot.get("road_edges") or [])
     sun = sun_path(round(c[0], 6), round(c[1], 6), plot.get("orientation_deg") or 0)
+    # Roof available for PV is the towers' combined footprint -- the terrace is the
+    # footprint, one storey up.
+    roof_sqm = sum(float(t.get("footprint_area") or 0) for t in (project.get("towers") or []))
+    solar = solar_potential(round(c[0], 6), round(c[1], 6), roof_sqm,
+                            (project.get("solar") or {}))
     wind = wind_profile(c[0], c[1])
     suit = suitability(terrain, flood, access, sun)
     build = buildability(terrain, flood, access, features)
@@ -589,6 +691,7 @@ async def analyse_site(project, radius_m=500):
         "flood": flood,
         "wind": wind,
         "sun": sun,
+        "solar": solar,
         "accessibility": access,
         "suitability": suit,
         "buildability": build,

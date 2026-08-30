@@ -10,6 +10,51 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { dt, num } from "../lib/format";
 
+/** Scaled plan view of one scheme: plot outline with tower footprints inside it.
+ *
+ *  Scalar metrics cannot separate four squat towers from two slender ones on the same
+ *  FAR, which is exactly the choice a comparison is usually being made to settle. Drawn
+ *  to a shared scale so the two plans are directly comparable in size, not just in shape.
+ */
+function PlanView({ geometry, label, scale }) {
+  if (!geometry?.plot?.length_m) {
+    return <div className="text-[11px] text-slate-500">No plot geometry recorded.</div>;
+  }
+  const { length_m: L, width_m: W } = geometry.plot;
+  const pad = 8;
+  const w = L * scale + pad * 2;
+  const h = W * scale + pad * 2;
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-medium text-slate-700">{label}</div>
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="border border-slate-200 rounded-sm bg-slate-50"
+        role="img" aria-label={`Plan view of ${label}`}>
+        <rect x={pad} y={pad} width={L * scale} height={W * scale}
+          fill="#FFFFFF" stroke="#94A3B8" strokeWidth="1" />
+        {geometry.towers.map((t) => (
+          <g key={t.id}>
+            <rect x={pad + t.x * scale} y={pad + t.y * scale}
+              width={Math.max(t.w * scale, 2)} height={Math.max(t.d * scale, 2)}
+              fill="#2563EB" fillOpacity="0.75" stroke="#1D4ED8" strokeWidth="0.75" />
+            <title>{`${t.name} — ${t.floors} floors, ${t.height_m} m, ${t.footprint_sqm} m² footprint`}</title>
+          </g>
+        ))}
+      </svg>
+      <div className="text-[10px] text-slate-500 leading-snug">
+        {num(L, 0)} × {num(W, 0)} m · {geometry.towers.length} tower
+        {geometry.towers.length === 1 ? "" : "s"} · {num(geometry.ground_coverage_pct, 1)}% covered
+        {geometry.plot.basis !== "recorded plot dimensions" && (
+          <> · <span className="text-amber-700">{geometry.plot.basis}</span></>
+        )}
+        {geometry.placement !== "as positioned" && (
+          <> · <span className="text-amber-700">tower positions indicative</span></>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 export default function CollaborationModule({ projectId, setProject, readOnly }) {
   const [versions, setVersions] = useState([]);
   const [shares, setShares] = useState([]);
@@ -229,6 +274,21 @@ export default function CollaborationModule({ projectId, setProject, readOnly })
               : "Pick two schemes and click Compare."}
           </p>
         ) : (
+          <>
+          {compareResult.schemes[0].geometry && compareResult.schemes[1].geometry && (() => {
+            // One scale across both plans, so a bigger plot draws bigger.
+            const span = Math.max(
+              ...compareResult.schemes.map((s) => Math.max(s.geometry.plot.length_m || 1,
+                                                           s.geometry.plot.width_m || 1)));
+            const scale = 260 / (span || 1);
+            return (
+              <div className="grid sm:grid-cols-2 gap-4 mb-4" data-testid="compare-plans">
+                {compareResult.schemes.map((s) => (
+                  <PlanView key={s.id} geometry={s.geometry} label={s.label} scale={scale} />
+                ))}
+              </div>
+            );
+          })()}
           <Table>
             <TableHeader>
               <TableRow>
@@ -251,6 +311,7 @@ export default function CollaborationModule({ projectId, setProject, readOnly })
               })}
             </TableBody>
           </Table>
+          </>
         )}
 
         {compareResult && (

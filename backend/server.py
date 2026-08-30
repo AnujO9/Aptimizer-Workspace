@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 
@@ -346,6 +347,80 @@ async def public_compliance(token: str):
 
 # ---------------------------------------------------------------- scheme comparison
 @api.get("/projects/{project_id}/versions/compare")
+def _scheme_geometry(doc, an):
+    """Footprint rectangles and tower positions, for comparing two schemes by shape.
+
+    Scalar metrics cannot tell two schemes apart when one is four squat towers and the
+    other is two slender ones on the same FAR. This returns only what is needed to draw
+    them side by side -- a bounding box and one rectangle per tower, in plot-local metres
+    -- never the full polygon vertex arrays.
+    """
+    plot = doc.get("plot") or {}
+    area = float(an["areas"]["plot_area_sqm"] or 0)
+    length = float(plot.get("length") or 0)
+    width = float(plot.get("width") or 0)
+
+    # The recorded length x width often disagrees with the drawn polygon's area -- the
+    # sample project is 80 x 50 against a 15,219 m2 polygon. Drawing the box anyway would
+    # put the towers on 4,000 m2 and make the coverage look four times what it is, so the
+    # box is only trusted when it roughly agrees with the area it claims to enclose.
+    box_ok = length > 0 and width > 0 and area > 0 and abs(length * width - area) / area < 0.15
+    if box_ok:
+        basis = "recorded plot dimensions"
+    elif area > 0:
+        # Keep the drawn aspect ratio where there is one, but scale it to the real area.
+        ratio = (length / width) if (length > 0 and width > 0) else 1.0
+        width = math.sqrt(area / ratio)
+        length = width * ratio
+        basis = "scaled to the drawn polygon area"
+    else:
+        length = width = 0.0
+        basis = "no plot geometry"
+
+    towers = []
+    positioned = 0
+    for t, tm in zip(doc.get("towers") or [], an["areas"]["towers"]):
+        fp = float(tm.get("footprint_sqm") or 0)
+        # Towers carry an area, not a shape; assume the square that area implies, which is
+        # what the massing tools already do.
+        side = math.sqrt(fp) if fp > 0 else 0
+        pos = t.get("position") or {}
+        px, py = float(pos.get("x") or 0), float(pos.get("y") or 0)
+        if px or py:
+            positioned += 1
+        towers.append({
+            "id": tm.get("id"), "name": tm.get("name"),
+            "x": round(px, 2), "y": round(py, 2),
+            "w": round(side, 2), "d": round(side, 2),
+            "rotation_deg": round(float(t.get("rotation_deg") or 0), 1),
+            "floors": tm.get("floors"), "height_m": tm.get("height_m"),
+            "footprint_sqm": round(fp, 1),
+        })
+
+    # Without stored positions every tower sits at the origin, which draws them stacked on
+    # top of each other. Spread them along the plot instead and mark the layout indicative,
+    # so the comparison shows massing rather than a single misleading square.
+    placed = "as positioned"
+    if towers and positioned == 0:
+        gap = 4.0
+        run = sum(t["w"] for t in towers) + gap * (len(towers) - 1)
+        cursor = max((length - run) / 2, 0.0)
+        for t in towers:
+            t["x"] = round(cursor, 2)
+            t["y"] = round(max((width - t["d"]) / 2, 0.0), 2)
+            cursor += t["w"] + gap
+        placed = "indicative -- no tower positions recorded"
+
+    return {
+        "plot": {"length_m": round(length, 2), "width_m": round(width, 2),
+                 "area_sqm": area, "basis": basis,
+                 "orientation_deg": float(plot.get("orientation_deg") or 0)},
+        "towers": towers, "placement": placed,
+        "ground_coverage_pct": an["areas"]["ground_coverage_pct"],
+        "open_space_pct": an["areas"]["open_space_pct"],
+    }
+
+
 async def compare_versions(project_id: str, a: str = "", b: str = "",
                            user: dict = Depends(get_current_user)):
     proj = await load_project(project_id, user)
@@ -366,6 +441,35 @@ async def compare_versions(project_id: str, a: str = "", b: str = "",
         s = await scheme(vid)
         an = engine.analyse(s["doc"])
         ar, co, pk = an["areas"], an["compliance"], an["parking"]
+        util = an["utilities"]
+
+        # Sustainability and money are what a scheme is actually chosen on, and neither
+        # was comparable before: two layouts with identical areas can differ by hundreds
+        # of tonnes of carbon and several points of margin.
+        try:
+            eng = englib.analyse_engineering(s["doc"], an)
+            green = eng["modules"]["green"]
+            carbon = eng["modules"]["carbon"]
+            green_score = next((o["value"] for o in green["outputs"] if o["label"] == "Score"), None)
+            carbon_per_sqm = carbon["derived"]["per_sqm_kg"]
+            carbon_total = carbon["derived"]["total_tco2e"]
+            trees = eng["summary"].get("trees_required")
+        except Exception:            # a scheme too incomplete to engineer still compares
+            green_score = carbon_per_sqm = carbon_total = trees = None
+
+        # Water efficiency: how much of the yearly demand rainwater harvesting can meet.
+        demand_yr = float(util.get("water_demand_lpd") or 0) * 365.0
+        rwh_yr = float(util.get("rwh_annual_litres") or 0)
+        water_eff = round(rwh_yr / demand_yr * 100, 1) if demand_yr else None
+
+        try:
+            fin = financelib.analyse(s["doc"], an, s["doc"].get("finance"))
+            roi, margin = fin["profit"]["roi_pct"], fin["profit"]["margin_pct"]
+            irr, payback = fin["profit"]["irr_pct"], fin["timing"]["payback_month"]
+            revenue = fin["revenue"]["gross"]
+        except Exception:
+            roi = margin = irr = payback = revenue = None
+
         out.append({
             "id": s["id"], "label": s["label"], "at": s["at"],
             "metrics": {
@@ -378,7 +482,18 @@ async def compare_versions(project_id: str, a: str = "", b: str = "",
                 "Total cost (INR)": an["cost"]["total"], "Cost per flat (INR)": an["cost"]["per_unit"],
                 "Cost per m² (INR)": an["cost"]["per_sqm"],
                 "Compliance passed": f"{co['passed']}/{co['total']}", "Compliance score (%)": co["score"],
+                "Green score (%)": green_score,
+                "Embodied carbon (tCO₂e)": carbon_total,
+                "Carbon per m² (kgCO₂e)": carbon_per_sqm,
+                "Water met by rainwater (%)": water_eff,
+                "Trees required": trees,
+                "Gross revenue (INR)": revenue,
+                "Return on cost (%)": roi,
+                "Profit margin (%)": margin,
+                "Annual IRR (%)": irr,
+                "Cash positive (month)": payback,
             },
+            "geometry": _scheme_geometry(s["doc"], an),
         })
     keys = list(out[0]["metrics"].keys())
     return {"schemes": out, "keys": keys, "currency": "INR"}

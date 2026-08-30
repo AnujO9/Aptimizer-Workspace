@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, RefreshCw, Sparkles, TriangleAlert, XCircle } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, apiError } from "../lib/api";
 import { GisMap } from "../components/GisMap";
 import { SunPathDiagram, WindRose } from "../components/SiteDiagrams";
@@ -10,7 +10,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Progress } from "../components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { dt, num } from "../lib/format";
+import { dt, int, money, num } from "../lib/format";
 
 const Markdown = ({ text }) => (
   <div className="space-y-1.5 text-sm text-slate-700" data-testid="ai-summary-text">
@@ -262,6 +262,52 @@ export default function GisModule({ project, projectId, readOnly }) {
                 </TableBody>
               </Table>
             </Section>
+
+            {gis.solar && (
+              <Section
+                title="Rooftop solar potential"
+                description="What the terrace could generate, from the same sun geometry as the path above"
+                testid="gis-solar-section"
+              >
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Metric label="System size" value={num(gis.solar.installable_kwp, 1)} unit="kWp"
+                    testid="solar-kwp" />
+                  <Metric label="Yearly generation" value={int(gis.solar.annual_yield_kwh)} unit="kWh"
+                    testid="solar-yield" />
+                  <Metric label="Yearly saving" value={money(gis.solar.annual_saving_inr, "INR")}
+                    testid="solar-saving" />
+                  <Metric label="Pays for itself in"
+                    value={gis.solar.payback_years == null ? "—" : num(gis.solar.payback_years, 1)}
+                    unit="years" testid="solar-payback" />
+                </div>
+                <p className="text-[11px] text-slate-500 mt-3">
+                  {num(gis.solar.usable_area_sqm, 0)} m² of the {num(gis.solar.roof_area_sqm, 0)} m²
+                  terrace is usable once lifts, tanks and access paths are taken out, at roughly
+                  10 m² per kWp for tilted rows. This site receives{" "}
+                  <span className="font-semibold text-slate-700">
+                    {num(gis.solar.insolation.annual_kwh_per_sqm, 0)} kWh/m² a year
+                  </span>{" "}
+                  ({num(gis.solar.insolation.daily_average_kwh_per_sqm, 1)} a day), giving{" "}
+                  {int(gis.solar.specific_yield_kwh_per_kwp)} kWh per kWp installed. Payback is
+                  against a ₹{gis.solar.config.tariff_per_kwh}/kWh tariff and ignores any subsidy or
+                  export price, both of which vary by state. Avoids about{" "}
+                  {num(gis.solar.co2_avoided_tonnes_per_yr, 1)} tonnes of CO₂ a year.
+                </p>
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={gis.solar.insolation.monthly.map((m, i) => ({
+                    month: ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][i],
+                    kwh: m.kwh_per_sqm_month,
+                  }))} margin={{ top: 12, right: 8, left: 8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                    <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={(v) => `${v} kWh/m²`} />
+                    <Bar dataKey="kwh" fill="#F59E0B" radius={[2, 2, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Section>
+            )}
 
             <div className="space-y-4">
               <Section title={`Wind — ${gis.wind.region}`} testid="gis-wind-section">
