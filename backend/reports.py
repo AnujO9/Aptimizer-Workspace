@@ -143,6 +143,218 @@ def _optimisers(project: dict, a: dict, eng: dict):
     return out
 
 
+# ---------------------------------------------------------------- per-tower breakdowns
+# Some figures are computed per tower by the engine (loads, base shear, column size). Most
+# are not: the BOQ, the cost and the utilities are project-wide, and a per-tower row for
+# them can only be an APPORTIONMENT. Those tables say so in a footnote and name the basis,
+# because a reader who assumes an apportioned figure was independently derived will use it
+# to compare towers that were never separately costed.
+APPORTIONED = ("Apportioned by each tower's share of built-up area — these are not "
+               "separately computed per tower, so they show where a project total lands, "
+               "not an independent estimate.")
+
+
+def _shares(a: dict):
+    """(tower, share-of-built-up) for each tower, summing to 1."""
+    towers = a["areas"]["towers"]
+    total = sum(float(t["builtup_sqm"] or 0) for t in towers) or 1.0
+    return [(t, float(t["builtup_sqm"] or 0) / total) for t in towers]
+
+
+def _tower_structural(el, ss, a: dict, eng: dict):
+    per = (eng or {}).get("per_tower") or {}
+    if not per:
+        return
+    rows = []
+    for t in a["areas"]["towers"]:
+        e = per.get(t.get("id")) or {}
+        loads = e.get("loads") or {}
+        seis = e.get("seismic") or {}
+        rows.append([
+            t["name"], t["floors"], _n(t["height_m"]), _n(t["footprint_sqm"]),
+            _n(t["builtup_per_floor_sqm"]), loads.get("column_size_mm", "-"),
+            _n(loads.get("column_load_kn")), _n(seis.get("base_shear_kn")),
+        ])
+    el += [Paragraph("Per Tower — Structural", ss["Sec"]),
+           _table([["Tower", "Floors", "Height (m)", "Footprint (m²)", "Plate (m²)",
+                    "Column (mm)", "Column load (kN)", "Base shear (kN)"]] + rows,
+                  col_widths=[26 * mm, 14 * mm, 18 * mm, 22 * mm, 20 * mm, 24 * mm,
+                              24 * mm, 22 * mm]),
+           Paragraph("Column load is the worst-case axial load on an interior column "
+                     "(IS 875 Parts 1–2 loads, tributary area method). Base shear is the "
+                     "design seismic force at the base, IS 1893 (Part 1):2016 Cl. 7.6. "
+                     "Both are computed per tower, not apportioned.", ss["Sub"])]
+    found = next((o for o in (eng["modules"]["foundation"]["outputs"]) if "ype" in o["label"]), None)
+    rec = eng["modules"]["foundation"].get("recommendation") or {}
+    if rec:
+        el += [Paragraph(f"Foundation, all towers: {rec.get('value')} — the foundation "
+                         "module sizes one system for the site, not one per tower.", ss["Sub"])]
+
+
+def _tower_boq(el, ss, a: dict, cur: str):
+    shares = _shares(a)
+    if len(shares) < 1:
+        return
+    mats = {m["key"]: m for m in a["boq"]["materials"]}
+    keys = [k for k in ("concrete", "steel", "bricks", "tiles", "paint") if k in mats]
+    rows = []
+    for t, share in shares:
+        row = [t["name"], f"{share * 100:.1f}%"]
+        for k in keys:
+            row.append(_n(float(mats[k]["quantity"]) * share))
+        row.append(_n(sum(float(mats[k]["amount"]) * share for k in keys)))
+        rows.append(row)
+    total = ["Project total", "100.0%"] + [_n(float(mats[k]["quantity"])) for k in keys] \
+            + [_n(sum(float(mats[k]["amount"]) for k in keys))]
+    header = ["Tower", "Share"] + [f'{mats[k]["label"].split(" (")[0]} ({mats[k]["unit"]})'
+                                   for k in keys] + [f"Cost ({cur})"]
+    el += [Paragraph("Per Tower — Quantities and Cost", ss["Sec"]),
+           _table([header] + rows + [total],
+                  col_widths=[24 * mm, 16 * mm] + [22 * mm] * len(keys) + [30 * mm]),
+           Paragraph(APPORTIONED + " The total row is the project figure and equals the sum "
+                     "of the rows above it.", ss["Sub"])]
+
+
+def _tower_cost(el, ss, project: dict, a: dict, cur: str):
+    shares = _shares(a)
+    fin = _finance(project, a)
+    total_cost = float(a["cost"]["total"] or 0)
+    sale_by_sqft = None
+    if fin:
+        sale_by_sqft = float(fin["config"].get("sale_rate_per_sqft") or 0)
+    rows = []
+    for t, share in shares:
+        cost = total_cost * share
+        bu = float(t["builtup_sqm"] or 0)
+        units = int(t["total_units"] or 0)
+        saleable = float(t["super_builtup_sqm"] or 0) * 10.7639
+        rows.append([
+            t["name"], _n(cost), _n(cost / bu) if bu else "-",
+            _n(cost / units) if units else "-", _n(saleable),
+            _n(saleable * sale_by_sqft) if sale_by_sqft else "-",
+        ])
+    rows.append(["Project total", _n(total_cost), _n(a["cost"]["per_sqm"]),
+                 _n(a["cost"]["per_unit"]),
+                 _n(sum(float(t["super_builtup_sqm"] or 0) * 10.7639 for t, _ in shares)),
+                 _n(fin["revenue"]["from_sales"]) if fin else "-"])
+    el += [Paragraph("Per Tower — Cost and Revenue", ss["Sec"]),
+           _table([["Tower", f"Cost ({cur})", f"Per m² ({cur})", f"Per flat ({cur})",
+                    "Saleable (sqft)", f"Revenue ({cur})"]] + rows,
+                  col_widths=[26 * mm, 30 * mm, 24 * mm, 26 * mm, 26 * mm, 32 * mm]),
+           Paragraph("Cost is " + APPORTIONED[0].lower() + APPORTIONED[1:] +
+                     " Saleable area and revenue ARE per tower: saleable is that tower's "
+                     "own super built-up area, priced at the rate in Feasibility & ROI. "
+                     "The revenue total therefore equals the sum of its rows; the cost "
+                     "total does too, by construction of the apportionment.", ss["Sub"])]
+
+
+def _tower_programme(el, ss, project: dict, a: dict, plan: dict):
+    acts = plan.get("activities") or []
+    if not acts:
+        return
+    by_tower = {}
+    for x in acts:
+        key = x.get("tower")
+        if not key:
+            continue
+        b = by_tower.setdefault(key, {"start": x["start"], "finish": x["finish"],
+                                      "critical": False, "n": 0})
+        b["start"] = min(b["start"], x["start"])
+        b["finish"] = max(b["finish"], x["finish"])
+        b["critical"] = b["critical"] or bool(x.get("critical"))
+        b["n"] += 1
+    if not by_tower:
+        return
+    from datetime import date as _date
+    names = {t.get("id"): t.get("name") for t in a["areas"]["towers"]}
+    rows = []
+    for key, b in sorted(by_tower.items(), key=lambda kv: kv[1]["start"]):
+        days = (_date.fromisoformat(b["finish"]) - _date.fromisoformat(b["start"])).days + 1
+        rows.append([names.get(key, key), b["start"], b["finish"], _n(days), _n(b["n"]),
+                     "yes" if b["critical"] else "no"])
+    cycle = (plan.get("safety") or {}).get("floor_cycle_days")
+    el += [Paragraph("Per Tower — Programme", ss["Sec"]),
+           _table([["Tower", "Start", "Finish", "Calendar days", "Tasks", "On critical path"]]
+                  + rows,
+                  col_widths=[28 * mm, 26 * mm, 26 * mm, 26 * mm, 20 * mm, 28 * mm],
+                  align_right_from=6),
+           Paragraph(f"Dates are the earliest start and latest finish of that tower's own "
+                     f"tasks, from the CPM forward pass. Floor cycle is {cycle} days for "
+                     "every tower — it is set by the slab cycle and the IS 456 curing and "
+                     "prop-removal minimums, which do not vary by tower. A tower is on the "
+                     "critical path if any of its tasks is.", ss["Sub"])]
+
+
+def _tower_water(el, ss, a: dict):
+    shares = _shares(a)
+    u = a["utilities"]
+    total_occ = sum(int(t["occupants"] or 0) for t, _ in shares) or 1
+    demand = float(u.get("water_demand_lpd") or 0)
+    ug = float(u.get("ug_tank_cum") or 0)
+    oh = float(u.get("oh_tank_cum") or 0)
+    rows = []
+    for t, _share in shares:
+        occ = int(t["occupants"] or 0)
+        f = occ / total_occ
+        rows.append([t["name"], _n(occ), _n(demand * f), _n(ug * f), _n(oh * f)])
+    rows.append(["Project total", _n(total_occ), _n(demand), _n(ug), _n(oh)])
+    el += [Paragraph("Per Tower — Water Demand", ss["Sec"]),
+           _table([["Tower", "Occupants", "Demand (litre/day)", "Sump (m³)", "Overhead (m³)"]]
+                  + rows,
+                  col_widths=[30 * mm, 24 * mm, 34 * mm, 26 * mm, 30 * mm]),
+           Paragraph("Demand per occupant follows IS 1172:1993. Tank volumes are apportioned "
+                     "by occupancy — in practice one sump serves the site, so these rows show "
+                     "each tower's share of a shared tank, not a tank per tower. The total is "
+                     "the sized volume and equals the sum of the shares.", ss["Sub"])]
+
+
+def _tower_compliance(el, ss, a: dict):
+    towers = a["areas"]["towers"]
+    plot = float(a["areas"]["plot_area_sqm"] or 0)
+    rows = []
+    for t in towers:
+        fp = float(t["footprint_sqm"] or 0)
+        rows.append([t["name"], _n(t["height_m"]), _n(t["floors"]), _n(fp),
+                     _n(fp / plot * 100) if plot else "-",
+                     _n(t["stair_min_width"]), _n(t["lift_count"]),
+                     _n(t["exits_per_floor"])])
+    rows.append(["Project", _n(a["areas"]["max_height_m"]), _n(a["areas"]["total_floors"]),
+                 _n(a["areas"]["ground_footprint_sqm"]),
+                 _n(a["areas"]["ground_coverage_pct"]), "-", "-", "-"])
+    el += [Paragraph("Per Tower — Rules Evaluated Per Building", ss["Sec"]),
+           _table([["Tower", "Height (m)", "Floors", "Footprint (m²)", "Coverage (%)",
+                    "Stair (m)", "Lifts", "Exits/floor"]] + rows,
+                  col_widths=[24 * mm, 20 * mm, 16 * mm, 24 * mm, 22 * mm, 18 * mm,
+                              14 * mm, 20 * mm]),
+           Paragraph("Coverage is that tower's footprint over the whole plot, so the rows "
+                     "sum to the project coverage. Stair width, lift count and exits are "
+                     "checked per building: NBC 2016 Part 4 Cl. 4.3 (exits) and Part 3 "
+                     "(stairs and lifts). Height governs the setback minimum, so a taller "
+                     "tower raises the requirement for the whole site.", ss["Sub"])]
+
+
+def _tower_carbon(el, ss, a: dict, eng: dict):
+    carbon = ((eng or {}).get("modules") or {}).get("carbon")
+    if not carbon:
+        return
+    total = float(carbon["derived"]["total_tco2e"] or 0)
+    rows = []
+    for t, share in _shares(a):
+        bu = float(t["builtup_sqm"] or 0)
+        tco2 = total * share
+        rows.append([t["name"], _n(bu), _n(tco2), f"{share * 100:.1f}%",
+                     _n(tco2 * 1000 / bu) if bu else "-"])
+    rows.append(["Project total", _n(a["areas"]["builtup_area_sqm"]), _n(total), "100.0%",
+                 _n(carbon["derived"]["per_sqm_kg"])])
+    el += [Paragraph("Per Tower — Embodied Carbon", ss["Sec"]),
+           _table([["Tower", "Built-up (m²)", "Carbon (tCO₂e)", "Share", "Per m² (kgCO₂e)"]]
+                  + rows,
+                  col_widths=[30 * mm, 28 * mm, 28 * mm, 20 * mm, 32 * mm]),
+           Paragraph(APPORTIONED + " Carbon per m² is therefore the same for every tower; "
+                     "it varies only if the towers differ in specification, which this "
+                     "model does not currently track per tower.", ss["Sub"])]
+
+
 def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> bytes:
     report_type = MERGED_INTO.get(report_type, report_type)
     buf = io.BytesIO()
@@ -352,6 +564,22 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                              "to include the site suitability scorecard.", ss["Sub"])]
 
 
+    # ---------------------------------------------------------------- per tower
+    # A blended total hides which tower drives which number, which is the whole reason a
+    # reader opens a per-tower report.
+    if eng and report_type == "structural":
+        _tower_structural(el, ss, a, eng)
+    if report_type == "boq":
+        _tower_boq(el, ss, a, cur)
+    if report_type == "cost":
+        _tower_cost(el, ss, project, a, cur)
+    if report_type == "water":
+        _tower_water(el, ss, a)
+    if report_type == "compliance":
+        _tower_compliance(el, ss, a)
+    if eng and report_type == "sustainability":
+        _tower_carbon(el, ss, a, eng)
+
     # ---------------------------------------------------------------- programme
     if report_type == "programme":
         plan = _programme(project, a)
@@ -386,6 +614,7 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                                  f"{saf.get('prop_removal_days')} calendar days — "
                                  f"{saf.get('governing_rule')}. Adding labour shortens every "
                                  "other activity, never this one.", ss["Sub"])]
+            _tower_programme(el, ss, project, a, plan)
             findings = (saf.get("findings") or [])
             if findings:
                 el += [Paragraph("Safety Findings", ss["Sec"])] + \
