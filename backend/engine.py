@@ -531,6 +531,102 @@ def compliance(project, areas, park):
     }
 
 
+def far_derivation(project, areas):
+    """Every step from plot area to the reported FAR, as the engine actually computes it.
+
+    Written against the real calculation rather than a plausible one, because the point of
+    the panel is that a reader can reproduce the number. Three things it has to be honest
+    about, all of which are surprising:
+
+      1. THERE ARE NO DEDUCTIONS. Built-up is summed straight from the towers. Parking and
+         society amenities are excluded by never being added, not by a deduction step, so
+         there is no itemised deduction list to show -- claiming one would be fiction.
+      2. FSI IS FAR TIMES A FACTOR, defaulting to 1.0. The two are the same number unless
+         somebody sets `config.fsi_factor`. They are not two different area bases.
+      3. Built-up per floor is (carpet + balcony) x (1 + wall thickness factor) + service
+         core. The loading that produces super built-up is NOT in it, which is why super
+         built-up is larger and is not what FAR is measured on.
+    """
+    cfg = project.get("config") or {}
+    plot_area = float(areas["plot_area_sqm"] or 0)
+    builtup = float(areas["builtup_area_sqm"] or 0)
+    wall_factor = float(cfg.get("wall_thickness_factor") or 0.10)
+    loading = float(cfg.get("common_area_loading") or 0.25)
+    fsi_factor = float(cfg.get("fsi_factor") or 1.0)
+
+    towers = [{
+        "name": t.get("name"), "floors": t.get("floors"),
+        "carpet_sqm": t.get("carpet_sqm"), "balcony_sqm": t.get("balcony_sqm"),
+        "service_core_per_floor_sqm": t.get("service_core_per_floor_sqm"),
+        "builtup_per_floor_sqm": t.get("builtup_per_floor_sqm"),
+        "builtup_sqm": t.get("builtup_sqm"),
+        "share_pct": round(float(t.get("builtup_sqm") or 0) / builtup * 100, 1) if builtup else 0.0,
+    } for t in (areas.get("towers") or [])]
+
+    # What the engine leaves OUT of the FAR numerator. Listed as "not counted" rather than
+    # "deducted" because that is what the code does -- these areas are never added.
+    excluded = [
+        {"item": "Society amenities", "area_sqm": areas.get("society_amenities_sqm", 0),
+         "reason": "Counted in super built-up, never in built-up, so it never enters FAR."},
+        {"item": "Common-area loading",
+         "area_sqm": round(sum(float(t.get("super_builtup_sqm") or 0)
+                               - float(t.get("builtup_sqm") or 0)
+                               for t in (areas.get("towers") or [])), 2),
+         "reason": (f"The {loading:.0%} loading that turns built-up into super built-up is a "
+                    "sales convention, not floor area, so FAR is measured before it.")},
+    ]
+
+    limits = {}
+    for rule in (project.get("compliance_rules") or DEFAULT_RULES):
+        if rule.get("id") in ("far_max", "fsi_max") and rule.get("enabled", True):
+            limits[rule["id"]] = rule
+
+    far = round(builtup / plot_area, 3) if plot_area else 0.0
+    fsi = round(far * fsi_factor, 3)
+    cap = float(limits.get("far_max", {}).get("threshold") or 0)
+
+    return {
+        "formula": "FAR = total built-up area / plot area",
+        "inputs": [
+            {"label": "Plot area", "value": round(plot_area, 2), "unit": "m2",
+             "source": "Plot polygon, or the recorded length x width"},
+            {"label": "Total built-up area", "value": round(builtup, 2), "unit": "m2",
+             "source": "Sum of every tower's built-up area"},
+        ],
+        "builtup_rule": ("Built-up per floor = (carpet + balcony) x (1 + "
+                         f"{wall_factor:.0%} wall thickness) + service core; "
+                         "multiplied by the floor count."),
+        "towers": towers,
+        "excluded": excluded,
+        "substitution": (f"FAR = {builtup:,.2f} / {plot_area:,.2f} = {far}"
+                         if plot_area else "FAR cannot be computed without a plot area"),
+        "far": far,
+        "fsi": fsi,
+        "fsi_factor": fsi_factor,
+        # The honest statement about the two figures, decided by the config not by prose.
+        "far_vs_fsi": (
+            "FAR and FSI are the same number in this project. FSI is FAR multiplied by "
+            f"config.fsi_factor, which is {fsi_factor:g}. They are not two different area "
+            "bases, and they will only differ if that factor is changed."
+            if abs(fsi_factor - 1.0) < 1e-9 else
+            f"FSI is FAR x {fsi_factor:g} (config.fsi_factor). The two differ only by that "
+            "multiplier -- the area basis underneath them is identical."),
+        "identical": abs(fsi_factor - 1.0) < 1e-9,
+        "permissible": {
+            "far_cap": cap,
+            "governing_control": limits.get("far_max", {}).get("label", "not set"),
+            "headroom_ratio": round(cap - far, 3) if cap else None,
+            "headroom_sqm": round((cap - far) * plot_area, 1) if cap and plot_area else None,
+            "used_pct": round(far / cap * 100, 1) if cap else None,
+        },
+        "no_deductions_note": (
+            "This engine applies no FSI deductions. Areas commonly deducted elsewhere -- "
+            "parking, stilts, service floors, refuge areas -- are excluded here by never "
+            "being added to built-up in the first place. If your authority requires an "
+            "explicit deduction schedule, it is not modelled."),
+    }
+
+
 def analyse(project):
     areas = area_metrics(project)
     park = parking_metrics(project, areas)
@@ -556,4 +652,5 @@ def analyse(project):
             ],
         },
         "utilities": util, "compliance": comp,
+        "far_derivation": far_derivation(project, areas),
     }
