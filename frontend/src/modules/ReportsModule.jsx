@@ -6,24 +6,42 @@ import { AiPanel } from "../components/AiPanel";
 import { Button } from "../components/ui/button";
 import { int, money, num } from "../lib/format";
 
-// Eleven reports, one per thing a reader asks for. Five were merged rather than kept --
-// they repeated numbers the survivor already carried, and a reader choosing between two
-// reports showing the same figures picks wrong half the time:
-//   Utility -> Water & Sanitation, Quantity -> BOQ, Accessibility -> Compliance,
-//   Setbacks & Controls -> Compliance, Parking -> Executive Summary.
-const REPORTS = [
-  ["executive", "Executive Summary", "Scale, cost, compliance, parking and site intelligence in one document"],
-  ["site", "Site Analysis", "Terrain, flood risk, access, sun path, suitability and solar potential"],
-  ["compliance", "Compliance Validation", "Rule-by-rule pass/fail, including accessibility and development controls"],
-  ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility, carbon and plantation"],
-  ["structural", "Structural Design Basis", "IS 875 loads, IS 1893 base shear, foundation, mix design, column grid"],
-  ["water", "Water & Sanitation", "IS 1172 demand, sump and OHT, STP, storm drainage, RWH and plant rooms"],
-  ["fire", "Fire & Life Safety", "NBC Part 4 clause-by-clause checks with a per-floor checklist"],
-  ["sustainability", "Sustainability & Carbon", "Green rating, embodied carbon by material, plantation plan and rooftop solar"],
-  ["boq", "BOQ & Quantities", "Material, labour and equipment schedules with the quantities behind them"],
-  ["cost", "Cost & Feasibility", "Cost heads, cost per flat, revenue, margin, ROI, IRR, payback and cash flow"],
-  ["programme", "Construction Programme", "Phase table, critical path, floor cycle and the IS 456 safety basis"],
+// The reports page mirrors the workspace menu: same group order, same group labels, so a
+// reader looking for "the parking numbers" goes to the group they already navigate by.
+//
+// Three things the menu has that no longer have a document of their own -- Plot &
+// Setbacks, Apartment Planning, Parking -- were merged into other reports rather than kept
+// as thin duplicates. Each group says where its numbers went instead of showing an empty
+// heading, because an unexplained gap reads as something missing.
+const REPORT_GROUPS = [
+  ["site", "Site", [
+    ["site", "Site Analysis", "Terrain, flood risk, access, sun path, suitability and solar potential"],
+  ], "Plot geometry and setbacks are checked in the Compliance report."],
+
+  ["design", "Design", [],
+   "Apartment planning and parking are in the Executive Summary — neither filled a report on its own."],
+
+  ["eng", "Engineering", [
+    ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility, carbon and plantation"],
+    ["structural", "Structural Design Basis", "IS 875 loads, IS 1893 base shear, foundation, mix design, column grid"],
+    ["water", "Water & Sanitation", "IS 1172 demand, sump and OHT, STP, storm drainage, RWH and plant rooms"],
+    ["fire", "Fire & Life Safety", "NBC Part 4 clause-by-clause checks with a per-floor checklist"],
+    ["sustainability", "Sustainability & Carbon", "Green rating, embodied carbon by material, plantation plan and rooftop solar"],
+  ], ""],
+
+  ["commercial", "Cost & Programme", [
+    ["boq", "BOQ & Quantities", "Material, labour and equipment schedules with the quantities behind them"],
+    ["cost", "Cost & Feasibility", "Cost heads, revenue, margin, ROI, IRR, payback, cash flow and optimiser findings"],
+    ["programme", "Construction Programme", "Phase table, critical path, floor cycle and the IS 456 safety basis"],
+  ], ""],
+
+  ["deliver", "Deliver", [
+    ["compliance", "Compliance Validation", "Rule-by-rule pass/fail, including accessibility and development controls"],
+    ["executive", "Executive Summary", "The roll-up of everything above: scale, cost, compliance, parking and site"],
+  ], ""],
 ];
+
+const REPORTS = REPORT_GROUPS.flatMap(([, , items]) => items);
 
 export default function ReportsModule({ project, analysis, projectId, readOnly, setProject }) {
   const a = analysis;
@@ -75,30 +93,49 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
         </Button>
       </div>
 
-      <div className="grid gap-px bg-slate-200 border border-slate-200 md:grid-cols-2">
-        {REPORTS.map(([key, title, desc]) => (
-          <div key={key} className="bg-white p-4 flex items-start justify-between gap-4" data-testid={`report-card-${key}`}>
-            <div>
-              <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
-              <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
+      {REPORT_GROUPS.map(([gid, label, items, note]) => (
+        <div key={gid} className="space-y-2" data-testid={`report-group-${gid}`}>
+          <h3 className="text-[11px] uppercase tracking-wider text-slate-500">{label}</h3>
+          {note && <p className="text-[11px] text-slate-500">{note}</p>}
+          {items.length > 0 && (
+            <div className="grid gap-px bg-slate-200 border border-slate-200 md:grid-cols-2">
+              {items.map(([key, title, desc]) => (
+                <div key={key} className="bg-white p-4 flex items-start justify-between gap-4"
+                  data-testid={`report-card-${key}`}>
+                  <div>
+                    <h4 className="text-sm font-semibold tracking-tight">{title}</h4>
+                    <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
+                  </div>
+                  <Button size="sm" variant="outline" className="rounded-sm text-xs shrink-0"
+                    data-testid={`download-${key}-report`}
+                    onClick={() => dl(`/projects/${projectId}/reports/${key}`,
+                      `${project.name.replace(/\s+/g, "_")}_${key}.pdf`)}>
+                    <Download className="h-3.5 w-3.5 mr-1.5" /> PDF
+                  </Button>
+                </div>
+              ))}
+              {/* The workbook belongs beside the BOQ report it duplicates in Excel form. */}
+              {gid === "commercial" && (
+                <div className="bg-white p-4 flex items-start justify-between gap-4"
+                  data-testid="report-card-boq-excel">
+                  <div>
+                    <h4 className="text-sm font-semibold tracking-tight">BOQ Workbook</h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Excel with Materials, Labour, Equipment and Summary sheets
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" className="rounded-sm text-xs shrink-0"
+                    data-testid="download-boq-excel"
+                    onClick={() => dl(`/projects/${projectId}/boq.xlsx`,
+                      `${project.name.replace(/\s+/g, "_")}_BOQ.xlsx`)}>
+                    <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" /> Excel
+                  </Button>
+                </div>
+              )}
             </div>
-            <Button size="sm" variant="outline" className="rounded-sm text-xs shrink-0" data-testid={`download-${key}-report`}
-              onClick={() => dl(`/projects/${projectId}/reports/${key}`, `${project.name.replace(/\s+/g, "_")}_${key}.pdf`)}>
-              <Download className="h-3.5 w-3.5 mr-1.5" /> PDF
-            </Button>
-          </div>
-        ))}
-        <div className="bg-white p-4 flex items-start justify-between gap-4" data-testid="report-card-boq-excel">
-          <div>
-            <h3 className="text-sm font-semibold tracking-tight">BOQ Workbook</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Excel with Materials, Labour, Equipment and Summary sheets</p>
-          </div>
-          <Button size="sm" variant="outline" className="rounded-sm text-xs shrink-0" data-testid="download-boq-excel"
-            onClick={() => dl(`/projects/${projectId}/boq.xlsx`, `${project.name.replace(/\s+/g, "_")}_BOQ.xlsx`)}>
-            <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" /> Excel
-          </Button>
+          )}
         </div>
-      </div>
+      ))}
 
       <AiPanel
         title="AI executive summary"
