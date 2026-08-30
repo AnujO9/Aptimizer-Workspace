@@ -86,6 +86,17 @@ def test_cost_report_carries_the_feasibility_figures(ctx):
         assert probe in t, probe
 
 
+def test_cost_report_carries_the_optimisation_findings(ctx):
+    """The brief lists Optimisation Findings under "Add" but fixes the final set at eleven
+    without it. Both hold: the content ships inside Cost & Feasibility."""
+    p, a, eng = ctx
+    t = text_of(R.build_pdf("cost", p, a, eng))
+    assert "Optimisation Findings" in t
+    assert "Change required" in t
+    assert "Waste reduction" in t
+    assert len(R.REPORT_TITLES) == 11
+
+
 def test_sustainability_report_carries_m13_and_m14(ctx):
     p, a, eng = ctx
     t = text_of(R.build_pdf("sustainability", p, a, eng))

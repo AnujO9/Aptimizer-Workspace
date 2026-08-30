@@ -106,9 +106,9 @@ numbers.
 
 | Gate | Result |
 |---|---|
-| `pytest` | **528 passed** (473 before this brief) |
+| `pytest` | **546 passed** (473 before this brief) |
 | `npm run build` | exit 0, pre-existing `exhaustive-deps` warnings only |
-| New tests | 96 across `aptspeed_test` (41), `overrides_test` (20), `reports_test` (35) |
+| New tests | 114 across `aptspeed_test` (41), `overrides_test` (20), `reports_test` (36), `stream_test` (13), plus 4 route tests |
 
 Excluded from the gate and untouched, as before: `gis_test.py`, `engineering_test.py`,
 `rbac_v2_test.py`, `backend_test.py` — all four hit a remote preview URL rather than local
@@ -128,13 +128,35 @@ Tests worth naming, because they hold decisions rather than behaviour:
 
 ---
 
+## A bug the second HTTP test module found
+
+Adding `stream_test.py` broke `routes_smoke_test.py` — thirteen errors, all
+`RuntimeError: Event loop is closed`, and only when the two ran together. `server.db` is a
+motor client created at import; motor binds an event loop the first time it is used and
+keeps it. Each module had its own `TestClient`, so the first module's loop closed on exit
+and left motor holding a corpse.
+
+Fixed with one session-scoped client in `tests/conftest.py` that every HTTP test shares,
+plus a `mongo` fixture using sync pymongo for setup (calling motor synchronously returns an
+un-awaited coroutine, inserts nothing, and every request then 404s on an id that was never
+real). Verified in the exact order that used to fail, and serially.
+
+Worth recording because the failure only appears with two HTTP test modules in one process:
+individually both files passed, which is the shape of bug that gets committed.
+
+---
+
 ## Deferred, with the reason
 
-**Streaming is unverified end to end.** No AI provider key is configured in this
-environment, so `stream_markdown` has never run against a real provider. What is verified
-is the plumbing: the route is registered, the generator is an async generator, the SSE
-frame shape is fixed, the fallback path exists, and the citation guard runs on the
-assembled text. The "first word in under a second" target cannot be measured without a key.
+**Only the provider call in streaming is unverified.** No AI key is configured here, so
+`stream_markdown` has never run against a real provider, and the "first word in under a
+second" target cannot be measured. Everything between the provider and the browser now is
+tested, with a stubbed provider: delta ordering and reassembly, the done event and the
+model it names, thread storage, both failure paths (a stream that dies before any token
+falls back; one that dies mid-answer reports rather than restarting and rewriting text the
+reader has seen), the SSE headers, and tier-to-model routing. Most importantly
+`test_the_citation_guard_runs_on_the_streamed_answer` proves the guard runs on streamed
+text, which was the one rule that could not be allowed to slip.
 
 **No visual verification of any UI in this brief.** The workspace is behind authentication
 and no credentials were used. The editable task table, drag reordering, pin markers, the
@@ -146,8 +168,7 @@ table is the largest UI change here and the one to look at first.
 rule. It works with a mouse; it is not touch-accessible and has no keyboard equivalent.
 Worth revisiting if the programme table is used on a tablet.
 
-**`_optimisers` helper in `reports.py` is unused.** It was written for an Optimisation
-Findings report that the brief lists under "Add" but then excludes from the final set of
-eleven. The helper is left in place rather than deleted because optimiser results already
-reach the reader through the module panels and APT context; it would only have to be
-rewritten if that twelfth report is wanted later.
+**Optimisation Findings — resolved, not deferred.** The brief lists it under "Add" but
+then fixes the final set at eleven without it. Both halves now hold: the content ships as a
+section inside Cost & Feasibility (current, best found, change required, per optimiser),
+which is where optimiser findings belong, and the document count stays at eleven.

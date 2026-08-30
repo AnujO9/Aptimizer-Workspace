@@ -11,58 +11,25 @@ route-shape tests, not access-control tests, and rbac has its own suite.
 Skipped entirely when MongoDB is not reachable, so the suite stays green on a machine
 without one.
 
-One shared client for the module, entered as a context manager. motor binds its event loop
-the first time it is used and keeps it; a TestClient used outside a context manager starts
-a fresh loop per request, so the second request finds motor holding a closed one. The
-context manager keeps one portal, and therefore one loop, alive across the whole module.
-(pytest.ini already pins a module to a single xdist worker via --dist loadscope.)
+Every HTTP test in the suite shares one session-scoped TestClient, defined in
+tests/conftest.py. motor binds an event loop the first time it is used and keeps it, so a
+second TestClient in the same process leaves it holding a closed loop and every later
+request dies with "Event loop is closed" -- which is exactly what happened when a second
+HTTP test module was added.
 """
 import sys, os, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
-pytest.importorskip("fastapi.testclient")
-from fastapi.testclient import TestClient
-
 import server
-from defaults import default_project
 
 
-@pytest.fixture(scope="module")
-def client_and_project():
-    """A real project row, an admin session, and cleanup afterwards."""
-    from bson import ObjectId
-
-    admin = {"_id": ObjectId(), "email": "routes-test@local", "role": "admin",
-             "name": "Route Test"}
-    server.app.dependency_overrides[server.get_current_user] = lambda: admin
-
-    doc = default_project("Route Smoke", "QA", "Hyderabad", "RS-1", str(admin["_id"]))
-    doc["owner_id"] = str(admin["_id"])
-
-    # server.db is a motor (async) handle -- calling insert_one on it here returns an
-    # un-awaited coroutine, inserts nothing, and every request then 404s on a project id
-    # that was never a real ObjectId. Setup uses a sync pymongo client against the same
-    # database instead; the app under test still talks to it through motor.
-    try:
-        from pymongo import MongoClient
-        sync = MongoClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=3000)
-        sync.admin.command("ping")
-        sync_db = sync[os.environ["DB_NAME"]]
-        pid = str(sync_db.projects.insert_one(doc).inserted_id)
-    except Exception as exc:                     # no mongo on this machine
-        server.app.dependency_overrides.clear()
-        pytest.skip(f"MongoDB not reachable: {exc}")
-
-    with TestClient(server.app) as client:
-        yield client, pid
-
-    try:
-        sync_db.projects.delete_one({"_id": server.oid(pid)})
-        sync.close()
-    except Exception:
-        pass
-    server.app.dependency_overrides.clear()
+# Function-scoped, because api_project is: each test gets a clean project and
+# they cannot leak state into one another.
+@pytest.fixture
+def client_and_project(api_project):
+    """The shared client and a throwaway project. See tests/conftest.py."""
+    return api_project
 
 
 def _ok(resp, label):
@@ -151,6 +118,45 @@ def test_compare_versions_carries_the_new_metrics_and_geometry(client_and_projec
     geom = data["schemes"][0]["geometry"]
     assert geom["plot"]["length_m"] > 0 and geom["towers"]
     assert "basis" in geom["plot"] and "placement" in geom
+
+
+def test_suggestions_change_with_the_module(client_and_project):
+    """The gap this replaced: the same four questions on every tab."""
+    client, pid = client_and_project
+    seen = {}
+    for module in ("boq", "cost", "parking", "compliance", "programme"):
+        data = _ok(client.get(f"/api/projects/{pid}/ai/chat/suggestions",
+                              params={"module": module}), f"suggestions/{module}")
+        assert data["module"] == module
+        assert 3 <= len(data["suggestions"]) <= 4
+        seen[module] = data["suggestions"]
+    assert seen["boq"] != seen["cost"] != seen["parking"]
+    assert any("largest line" in q for q in seen["boq"])
+    assert any("slots" in q for q in seen["parking"])
+
+
+def test_reports_all_returns_one_merged_pdf(client_and_project):
+    import io as _io2
+    from pypdf import PdfReader
+    client, pid = client_and_project
+    r = client.get(f"/api/projects/{pid}/reports/all")
+    assert r.status_code == 200
+    assert r.content.startswith(b"%PDF")
+    assert len(PdfReader(_io2.BytesIO(r.content)).pages) > 11
+
+
+def test_a_merged_away_report_id_still_downloads(client_and_project):
+    """An old bookmark should land on the numbers, not a 400."""
+    client, pid = client_and_project
+    for old_id in ("utilities", "quantity", "accessibility", "parking"):
+        r = client.get(f"/api/projects/{pid}/reports/{old_id}")
+        assert r.status_code == 200, f"{old_id}: {r.status_code}"
+        assert r.content.startswith(b"%PDF")
+
+
+def test_an_unknown_report_id_is_still_rejected(client_and_project):
+    client, pid = client_and_project
+    assert client.get(f"/api/projects/{pid}/reports/nonsense").status_code == 400
 
 
 def test_engineering_route_exposes_the_new_modules(client_and_project):

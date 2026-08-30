@@ -425,6 +425,28 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                                for f in every3],
                               col_widths=[24 * mm, 46 * mm, 46 * mm, 51 * mm])]
 
+    if report_type == "cost":
+        opt = _optimisers(project, a, eng)
+        if opt:
+            rows = []
+            for key, o in opt.items():
+                cur, best = o["current"], o["best"]
+                unit = cur.get("unit") or ""
+                change = "; ".join(
+                    f'{c["lever"]}: {c["from"]} -> {c["to"]}'
+                    for c in (o.get("changes") or [])[:2]) or "no change available"
+                rows.append([o["title"],
+                             f'{_n(cur["value"])} {unit}'.strip(),
+                             f'{_n(best["value"])} {unit}'.strip(),
+                             change])
+            el += [Paragraph("Optimisation Findings", ss["Sec"]),
+                   Paragraph("Each row is what the scheme does today, the best the search "
+                             "found, and the change that gets there. Nothing here has been "
+                             "applied.", ss["Sub"]),
+                   _table([["Optimiser", "Now", "Best found", "Change required"]] + rows,
+                          col_widths=[34 * mm, 28 * mm, 28 * mm, 77 * mm],
+                          align_right_from=4)]
+
     # ---------------------------------------------------------------- site
     if report_type == "site":
         g = project.get("gis") or {}
