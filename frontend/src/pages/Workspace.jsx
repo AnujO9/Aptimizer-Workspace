@@ -201,17 +201,6 @@ export default function Workspace() {
           <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-sm bg-slate-100" data-testid="access-role-badge">
             {accessRole}
           </span>
-          {/* Apt hangs off the workspace chrome, not a tab: the question "why is this
-              number what it is" gets asked from whichever tab shows the number. */}
-          <button
-            onClick={() => setAptOpen(true)}
-            title="Ask Apt about this project"
-            data-testid="apt-trigger"
-            className="flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-colors rounded-sm px-2 py-1"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            Ask Apt
-          </button>
         </div>
       </TopBar>
 
@@ -244,7 +233,22 @@ export default function Workspace() {
         </main>
       </div>
 
-      <AptPanel open={aptOpen} onOpenChange={setAptOpen} projectId={projectId} />
+      {/* Apt sits on the workspace chrome rather than in a tab: "why is this number what
+          it is" gets asked from whichever tab is showing the number. Floating bottom-right
+          because that is where an assistant is looked for, and nothing can compress it. */}
+      {!aptOpen && (
+        <button
+          onClick={() => setAptOpen(true)}
+          title="Ask Apt about this project"
+          data-testid="apt-trigger"
+          className="fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25 pl-3.5 pr-4 py-2.5 text-sm font-medium transition-colors"
+        >
+          <Sparkles className="h-4 w-4" />
+          Ask Apt
+        </button>
+      )}
+
+      <AptPanel open={aptOpen} onOpenChange={setAptOpen} projectId={projectId} module={active} />
 
       <CommandPalette
         open={paletteOpen}

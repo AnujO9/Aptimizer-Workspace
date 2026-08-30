@@ -23,6 +23,7 @@ from starlette.middleware.cors import CORSMiddleware
 import ai as ailib
 import aptcontext as aptlib
 import aptspeed as speedlib
+import aptsuggest as suggestlib
 import citations as citelib
 import auth as authlib
 import engine
@@ -1006,34 +1007,41 @@ async def ai_chat_clear(project_id: str, user: dict = Depends(get_current_user))
 
 
 @api.get("/projects/{project_id}/ai/chat/suggestions")
-async def ai_chat_suggestions(project_id: str, user: dict = Depends(get_current_user)):
-    """Opening questions built from THIS project, so the panel is never a blank box."""
+async def ai_chat_suggestions(project_id: str, module: str = "",
+                              user: dict = Depends(get_current_user)):
+    """Opening questions for the module the user is on, built from its own numbers.
+
+    Cached per project version per module: the panel refetches on every module switch, and
+    without the cache each switch would re-analyse the project.
+    """
     proj = await load_project(project_id, user)
-    an = engine.analyse(proj)
-    out: List[str] = []
+    key = f'{speedlib.cache_key(proj)}:suggest:{module or "general"}'
 
-    failing = [r for r in an["compliance"]["results"] if r["status"] == "fail"]
-    if failing:
-        out.append(f'Why does "{failing[0]["label"]}" fail, and what is the smallest change that fixes it?')
-    else:
-        tight = min(an["compliance"]["results"],
-                    key=lambda r: abs(float(r["actual"] or 0) - float(r["threshold"] or 0)))
-        out.append(f'How much headroom is there on "{tight["label"]}"?')
+    def build():
+        an, _ = speedlib.cached_analysis(proj, engine.analyse,
+                                         englib.analyse_engineering,
+                                         need_engineering=(module == "engineering"))
+        ctx = {}
+        if module == "engineering":
+            _, eng = speedlib.cached_analysis(proj, engine.analyse,
+                                              englib.analyse_engineering)
+            ctx["engineering"] = eng
+        if module in ("programme", ""):
+            try:
+                plan = schedlib.plan_schedule(proj, an, (proj.get("schedule") or {}),
+                                              summary=True)
+                if plan.get("ok"):
+                    ctx["programme"] = plan
+            except Exception:
+                pass
+        if module == "finance":
+            try:
+                ctx["finance"] = financelib.analyse(proj, an, proj.get("finance"))
+            except Exception:
+                pass
+        return {"suggestions": suggestlib.build(proj, an, module, ctx), "module": module}
 
-    biggest = max(an["boq"]["materials"], key=lambda m: m["amount"], default=None)
-    if biggest:
-        out.append(f'{biggest["label"]} is the largest line in the bill at '
-                   f'INR {biggest["amount"]:,.0f}. What is driving it?')
-
-    try:
-        plan = schedlib.plan_schedule(proj, an, (proj.get("schedule") or {}), summary=True)
-        if plan.get("ok"):
-            out.append(f'The programme finishes {plan["finish"]}. What is on the critical path?')
-    except Exception:
-        pass
-
-    out.append("Show me step by step how the seismic base shear was calculated.")
-    return {"suggestions": out[:4]}
+    return speedlib.cached_context(proj, key, build)
 
 
 # ---------------------------------------------------------------- optimisers

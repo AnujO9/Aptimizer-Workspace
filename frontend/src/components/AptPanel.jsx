@@ -82,7 +82,7 @@ function Bubble({ m }) {
   );
 }
 
-export default function AptPanel({ open, onOpenChange, projectId }) {
+export default function AptPanel({ open, onOpenChange, projectId, module = "" }) {
   const [thread, setThread] = useState([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -96,9 +96,16 @@ export default function AptPanel({ open, onOpenChange, projectId }) {
     api.get("/ai/status").then(({ data }) => setStatus(data)).catch(() => setStatus(null));
     api.get(`/projects/${projectId}/ai/chat`)
       .then(({ data }) => setThread(data.thread || [])).catch(() => {});
-    api.get(`/projects/${projectId}/ai/chat/suggestions`)
-      .then(({ data }) => setSuggestions(data.suggestions || [])).catch(() => {});
   }, [open, projectId]);
+
+  // Suggestions are refetched on every module switch, so the opening questions are always
+  // about the tab the user is looking at. Kept in its own effect so switching modules does
+  // not also refetch the thread.
+  useEffect(() => {
+    if (!open || !projectId) return;
+    api.get(`/projects/${projectId}/ai/chat/suggestions`, { params: { module } })
+      .then(({ data }) => setSuggestions(data.suggestions || [])).catch(() => {});
+  }, [open, projectId, module]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -181,6 +188,11 @@ export default function AptPanel({ open, onOpenChange, projectId }) {
                 Ask about any number in this project — where it came from, which clause
                 governs it, or what would change if you moved an input.
               </p>
+              {suggestions.length > 0 && (
+                <p className="text-[10px] uppercase tracking-wider text-slate-400">
+                  About what you are looking at
+                </p>
+              )}
               <div className="space-y-1.5">
                 {suggestions.map((q) => (
                   <button key={q} onClick={() => send(q)} disabled={busy}
