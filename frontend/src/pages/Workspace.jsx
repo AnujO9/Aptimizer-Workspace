@@ -3,12 +3,13 @@ import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Map, Building2, Calculator, Car, ClipboardList, Wallet, ShieldCheck, FileText, History, CalendarClock,
-  Globe2, Box, Ruler, TrendingUp,
+  Globe2, Box, Ruler, TrendingUp, Sparkles,
 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { TopBar } from "../components/TopBar";
 import { MetricsStrip } from "../components/MetricsStrip";
 import { CommandPalette } from "../components/CommandPalette";
+import AptPanel from "../components/AptPanel";
 import { ProjectNav } from "../components/ProjectNav";
 import DevControlsModule from "../modules/DevControlsModule";
 import PlotModule from "../modules/PlotModule";
@@ -150,6 +151,7 @@ export default function Workspace() {
   const Current = useMemo(() => MODULES.find((m) => m[0] === active)?.[3], [active]);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [aptOpen, setAptOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -199,6 +201,17 @@ export default function Workspace() {
           <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-sm bg-slate-100" data-testid="access-role-badge">
             {accessRole}
           </span>
+          {/* Apt hangs off the workspace chrome, not a tab: the question "why is this
+              number what it is" gets asked from whichever tab shows the number. */}
+          <button
+            onClick={() => setAptOpen(true)}
+            title="Ask Apt about this project"
+            data-testid="apt-trigger"
+            className="flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-colors rounded-sm px-2 py-1"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Ask Apt
+          </button>
         </div>
       </TopBar>
 
@@ -230,6 +243,8 @@ export default function Workspace() {
           )}
         </main>
       </div>
+
+      <AptPanel open={aptOpen} onOpenChange={setAptOpen} projectId={projectId} />
 
       <CommandPalette
         open={paletteOpen}

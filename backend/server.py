@@ -21,6 +21,8 @@ from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
 import ai as ailib
+import aptcontext as aptlib
+import citations as citelib
 import auth as authlib
 import engine
 import engineering as englib
@@ -887,6 +889,113 @@ async def ai_compare(project_id: str, a: str = "", b: str = "",
                                 if schemes[0]["metrics"].get(k) != schemes[1]["metrics"].get(k)],
     }
     return await _run_ai("compare", context, project_id=project_id)
+
+
+# ---------------------------------------------------------------- APT assistant
+class ChatIn(BaseModel):
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+# Only the last few turns go upstream: a long thread costs more than it adds, and the
+# project state -- which is rebuilt fresh every message -- is what actually answers the
+# question. The full thread is still stored so the user sees their own history.
+CHAT_TURNS_SENT = 12
+CHAT_TURNS_STORED = 60
+
+
+@api.post("/projects/{project_id}/ai/chat")
+async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_current_user)):
+    """APT: answers from this project's live computed state, with citations checked."""
+    proj = await load_project(project_id, user, write=True)
+    messages = [m for m in body.messages
+                if m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()]
+    if not messages or messages[-1].get("role") != "user":
+        raise HTTPException(status_code=400, detail="Send at least one user message")
+
+    an = engine.analyse(proj)
+    eng = englib.analyse_engineering(proj, an)
+    context = aptlib.build(proj, an, eng)
+
+    serialised = ailib.context_block(context)
+    logger.info("apt.context project=%s chars=%d approx_tokens=%d",
+                project_id, len(serialised), len(serialised) // 4)
+
+    recent = messages[-CHAT_TURNS_SENT:]
+    transcript = "\n\n".join(f'{m["role"].upper()}: {m["content"]}' for m in recent)
+    try:
+        result = await ailib.generate_markdown(
+            ailib.PROMPTS["chat"],
+            "Project state:\n\n" + serialised + "\n\nConversation:\n\n" + transcript,
+            session_hint=f"chat-{project_id}",
+        )
+    except ailib.AIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ailib.AIFailed as exc:
+        raise HTTPException(status_code=502, detail=f"Assistant failed: {exc}")
+
+    # Citation guard. The model is given the registry to cite from; this checks what came
+    # back against it. Unresolved references are returned, never quietly stripped -- a
+    # clean answer with a hole in it is worse than a flagged one.
+    cites = citelib.verify(result["text"])
+    reply = {"role": "assistant", "content": result["text"],
+             "model": result["model"], "provider": result["provider"],
+             "at": now_iso(),
+             "unverified_citations": cites["unverified"],
+             "unconfirmed_clauses": cites["code_only"],
+             "verified_citations": cites["resolved"]}
+
+    thread = (messages + [reply])[-CHAT_TURNS_STORED:]
+    await db.projects.update_one(
+        {"_id": oid(project_id)},
+        {"$set": {"apt_thread": thread, "updated_at": now_iso()}})
+    return {"reply": reply, "thread": thread,
+            "context_chars": len(serialised)}
+
+
+@api.get("/projects/{project_id}/ai/chat")
+async def ai_chat_thread(project_id: str, user: dict = Depends(get_current_user)):
+    """The stored thread, so the panel reopens where the user left it."""
+    proj = await load_project(project_id, user)
+    return {"thread": proj.get("apt_thread") or []}
+
+
+@api.delete("/projects/{project_id}/ai/chat")
+async def ai_chat_clear(project_id: str, user: dict = Depends(get_current_user)):
+    await load_project(project_id, user, write=True)
+    await db.projects.update_one({"_id": oid(project_id)},
+                                 {"$unset": {"apt_thread": ""}})
+    return {"thread": []}
+
+
+@api.get("/projects/{project_id}/ai/chat/suggestions")
+async def ai_chat_suggestions(project_id: str, user: dict = Depends(get_current_user)):
+    """Opening questions built from THIS project, so the panel is never a blank box."""
+    proj = await load_project(project_id, user)
+    an = engine.analyse(proj)
+    out: List[str] = []
+
+    failing = [r for r in an["compliance"]["results"] if r["status"] == "fail"]
+    if failing:
+        out.append(f'Why does "{failing[0]["label"]}" fail, and what is the smallest change that fixes it?')
+    else:
+        tight = min(an["compliance"]["results"],
+                    key=lambda r: abs(float(r["actual"] or 0) - float(r["threshold"] or 0)))
+        out.append(f'How much headroom is there on "{tight["label"]}"?')
+
+    biggest = max(an["boq"]["materials"], key=lambda m: m["amount"], default=None)
+    if biggest:
+        out.append(f'{biggest["label"]} is the largest line in the bill at '
+                   f'INR {biggest["amount"]:,.0f}. What is driving it?')
+
+    try:
+        plan = schedlib.plan_schedule(proj, an, (proj.get("schedule") or {}), summary=True)
+        if plan.get("ok"):
+            out.append(f'The programme finishes {plan["finish"]}. What is on the critical path?')
+    except Exception:
+        pass
+
+    out.append("Show me step by step how the seismic base shear was calculated.")
+    return {"suggestions": out[:4]}
 
 
 # ---------------------------------------------------------------- optimisers

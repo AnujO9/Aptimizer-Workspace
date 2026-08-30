@@ -6,27 +6,81 @@ import { Section } from "./Field";
 import { Button } from "./ui/button";
 import { dt } from "../lib/format";
 
-// Minimal markdown renderer for model output: bold, inline code, headings and bullets.
-// Deliberately not a full parser -- the system prompts constrain the model to these few
-// constructs, and a full markdown dependency is not worth it for that.
-export const Markdown = ({ text, testid = "ai-summary-text" }) => (
-  <div className="space-y-1.5 text-sm text-slate-700" data-testid={testid}>
-    {String(text || "").split("\n").map((line, i) => {
-      const html = line
-        .replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-900">$1</strong>')
-        .replace(/`(.+?)`/g, '<code class="font-mono text-xs bg-slate-100 px-1 rounded-sm">$1</code>');
-      if (/^#{1,3}\s/.test(line))
-        return (
-          <h4 key={i} className="text-sm font-semibold tracking-tight text-slate-900 pt-2"
-            dangerouslySetInnerHTML={{ __html: html.replace(/^#{1,3}\s/, "") }} />
+// Minimal markdown renderer for model output: bold, inline code, headings, bullets,
+// numbered lists and fenced blocks. Deliberately not a full parser -- the system prompts
+// constrain the model to these constructs, and a markdown dependency is not worth it.
+//
+// Numbered lists and fenced blocks matter for APT specifically: its prompt asks for
+// derivations as numbered steps with the formula on its own line, and rendering "1." as
+// body text loses the structure the answer was written in.
+
+// Model output is interpolated as HTML below, so anything that arrives already looking
+// like a tag has to stop being one first. The single-shot report prompts never produce
+// tags, but APT relays user questions, and a question containing markup should render as
+// text rather than execute.
+const esc = (s) => String(s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const inline = (line) => esc(line)
+  .replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-900">$1</strong>')
+  .replace(/`(.+?)`/g, '<code class="font-mono text-xs bg-slate-100 px-1 rounded-sm">$1</code>');
+
+export const Markdown = ({ text, testid = "ai-summary-text" }) => {
+  const lines = String(text || "").split("\n");
+  const out = [];
+  let fence = null;
+
+  lines.forEach((line, i) => {
+    if (/^```/.test(line.trim())) {
+      if (fence) {
+        out.push(
+          <pre key={`f${i}`} className="bg-slate-900 text-slate-100 rounded-sm p-2.5 overflow-x-auto">
+            <code className="font-mono text-xs whitespace-pre">{fence.join("\n")}</code>
+          </pre>
         );
-      if (/^[-*]\s/.test(line))
-        return <li key={i} className="ml-4 list-disc" dangerouslySetInnerHTML={{ __html: html.replace(/^[-*]\s/, "") }} />;
-      if (!line.trim()) return <div key={i} className="h-1" />;
-      return <p key={i} dangerouslySetInnerHTML={{ __html: html }} />;
-    })}
-  </div>
-);
+        fence = null;
+      } else {
+        fence = [];
+      }
+      return;
+    }
+    if (fence) { fence.push(line); return; }
+
+    const html = inline(line);
+    if (/^#{1,3}\s/.test(line)) {
+      out.push(<h4 key={i} className="text-sm font-semibold tracking-tight text-slate-900 pt-2"
+        dangerouslySetInnerHTML={{ __html: inline(line.replace(/^#{1,3}\s/, "")) }} />);
+    } else if (/^\s*\d+[.)]\s/.test(line)) {
+      // Numbered steps keep their own number rather than being renumbered by the browser,
+      // because a derivation that starts at step 3 must still say 3.
+      const n = line.match(/^\s*(\d+)[.)]\s/)[1];
+      out.push(
+        <div key={i} className="flex gap-2 ml-1">
+          <span className="font-mono text-xs text-slate-400 pt-0.5 shrink-0">{n}.</span>
+          <span dangerouslySetInnerHTML={{ __html: inline(line.replace(/^\s*\d+[.)]\s/, "")) }} />
+        </div>
+      );
+    } else if (/^\s*[-*]\s/.test(line)) {
+      out.push(<li key={i} className="ml-4 list-disc"
+        dangerouslySetInnerHTML={{ __html: inline(line.replace(/^\s*[-*]\s/, "")) }} />);
+    } else if (!line.trim()) {
+      out.push(<div key={i} className="h-1" />);
+    } else {
+      out.push(<p key={i} dangerouslySetInnerHTML={{ __html: html }} />);
+    }
+  });
+
+  // An unterminated fence still has to render, or the tail of the answer disappears.
+  if (fence && fence.length) {
+    out.push(
+      <pre key="f-open" className="bg-slate-900 text-slate-100 rounded-sm p-2.5 overflow-x-auto">
+        <code className="font-mono text-xs whitespace-pre">{fence.join("\n")}</code>
+      </pre>
+    );
+  }
+
+  return <div className="space-y-1.5 text-sm text-slate-700" data-testid={testid}>{out}</div>;
+};
 
 // /ai/status is the same answer for every panel on the page, so it is fetched once per
 // page load and shared, rather than once per panel.
