@@ -27,6 +27,7 @@ import engineering as englib
 import finance as financelib
 import gis as gislib
 import iscodes as iscodes
+import optimise as optlib
 import layout as layoutlib
 import reports as reportlib
 import schedule as schedlib
@@ -885,6 +886,44 @@ async def ai_compare(project_id: str, a: str = "", b: str = "",
                                 if schemes[0]["metrics"].get(k) != schemes[1]["metrics"].get(k)],
     }
     return await _run_ai("compare", context, project_id=project_id)
+
+
+# ---------------------------------------------------------------- optimisers
+class OptimiseIn(BaseModel):
+    """`target_budget` drives the budget search; 0 means "ten percent under today"."""
+    target_budget: float = 0.0
+
+
+@api.post("/projects/{project_id}/optimise")
+async def project_optimise(project_id: str, body: OptimiseIn = OptimiseIn(),
+                           user: dict = Depends(get_current_user)):
+    """Waste, grade, budget and material optimisers over the current scheme."""
+    proj = await load_project(project_id, user)
+    an = engine.analyse(proj)
+    eng = englib.analyse_engineering(proj, an)
+    return optlib.analyse(proj, an, eng, body.target_budget)
+
+
+@api.post("/projects/{project_id}/ai/optimise")
+async def ai_optimise(project_id: str, body: OptimiseIn = OptimiseIn(),
+                      user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    eng = englib.analyse_engineering(proj, an)
+    opt = optlib.analyse(proj, an, eng, body.target_budget)
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "current_cost_inr": an["cost"]["total"],
+        # Only the decision-shaped parts: what it is now, what it could be, and the levers.
+        # The full option grids run to hundreds of rows and say nothing a reader needs.
+        "optimisers": {
+            k: {"current": v["current"], "best": v["best"], "delta": v["delta"],
+                "changes": v["changes"], "feasible": v["feasible"], "notes": v["notes"]}
+            for k, v in opt.items() if isinstance(v, dict) and "current" in v
+        },
+    }
+    return await _run_ai("optimise", context, store_at="ai.optimise",
+                         project_id=project_id, user=user, activity="ai.optimise")
 
 
 # ---------------------------------------------------------------- development finance

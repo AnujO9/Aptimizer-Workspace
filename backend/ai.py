@@ -381,6 +381,17 @@ PROMPTS = {
         "the gain). Explain IRR and payback in one clause each the first time you use "
         "them. Under 450 words."
     ),
+    "optimise": _BASE + (
+        " Each optimiser below reports what the scheme does now, the best the search "
+        "found, and the levers between them. Write for the developer deciding whether to "
+        "act. Sections: **Worth Doing** (bullets -- the changes whose saving justifies the "
+        "disruption, each with the number and what it costs elsewhere), **Not Worth It** "
+        "(bullets -- changes the data supports but that buy too little, and say why), and "
+        "**What This Does Not Cover** (bullets -- what a quantity surveyor would still "
+        "need to check before any of this is ordered). Never recommend a change the data "
+        "marks as non-compliant. If an optimiser reports no improvement, say the current "
+        "specification is already right rather than inventing one. Under 450 words."
+    ),
     "compare": _BASE + (
         " Two design schemes for the same project are given. Write: **Headline** (1-2 "
         "sentences naming which scheme is stronger overall and on what grounds), "

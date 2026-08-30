@@ -3,6 +3,7 @@ import { Metric, Section } from "../components/Field";
 import { AiPanel } from "../components/AiPanel";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { money, num } from "../lib/format";
+import OptimiserPanel from "../components/OptimiserPanel";
 
 const COLORS = ["#2563EB", "#0F172A", "#F59E0B"];
 
@@ -90,6 +91,9 @@ export default function CostModule({ analysis, project, projectId, readOnly, set
           </TableBody>
         </Table>
       </Section>
+
+      <OptimiserPanel projectId={projectId} only="cost" readOnly={readOnly}
+        currentCost={c.total} />
 
       <AiPanel
         title="AI cost review"

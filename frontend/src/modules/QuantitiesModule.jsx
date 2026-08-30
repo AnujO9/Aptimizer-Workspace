@@ -2,8 +2,9 @@ import { Metric, Section } from "../components/Field";
 import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { int, num } from "../lib/format";
+import OptimiserPanel from "../components/OptimiserPanel";
 
-export default function QuantitiesModule({ project, analysis, update, readOnly }) {
+export default function QuantitiesModule({ project, analysis, update, readOnly, projectId }) {
   const q = analysis?.quantities;
   const setRatio = (key, v) => update((p) => { p.quantity_ratios = { ...(p.quantity_ratios || {}), [key]: v }; });
 
@@ -57,6 +58,8 @@ export default function QuantitiesModule({ project, analysis, update, readOnly }
           </TableBody>
         </Table>
       </Section>
+      <OptimiserPanel projectId={projectId} only="quantities" readOnly={readOnly} />
+
     </div>
   );
 }

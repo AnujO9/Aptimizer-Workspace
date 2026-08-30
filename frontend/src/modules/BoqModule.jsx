@@ -72,7 +72,7 @@ export default function BoqModule({ project, analysis, update, readOnly, project
     <div className="space-y-4">
       {/* Quantities is the unpriced half of this same bill, so it lives here rather than
           as a separate destination in the sidebar. */}
-      <QuantitiesModule project={project} analysis={analysis} update={update} readOnly={readOnly} />
+      <QuantitiesModule project={project} analysis={analysis} update={update} readOnly={readOnly} projectId={projectId} />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Metric label="Material" value={money(b.material_total, cur)} testid="boq-material-total" />
