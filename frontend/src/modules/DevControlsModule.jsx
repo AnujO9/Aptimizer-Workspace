@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Metric, NumField, Section } from "../components/Field";
 import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -18,7 +18,7 @@ const CONFIDENCE = {
  * under the drawing tools. Every recommended value shows where it came from and whether
  * it still needs checking against the sanctioning authority.
  */
-export default function DevControlsModule({ project, analysis, update, readOnly }) {
+export default function DevControlsModule({ project, analysis, update, readOnly, projectId }) {
   const plot = project.plot || {};
   const areas = analysis?.areas;
   const plotArea = areas?.plot_area_sqm || 0;
@@ -31,6 +31,20 @@ export default function DevControlsModule({ project, analysis, update, readOnly 
   const [error, setError] = useState("");
 
   const setbacks = stored.setbacks || { front: 9, rear: 4.5, side: 4.5, default: 6 };
+  // The statutory minimum per edge, from the same backend function the envelope check
+  // uses -- so the number the user is validated against here and the number the layout
+  // engine enforces cannot drift apart.
+  const [limits, setLimits] = useState(null);
+  useEffect(() => {
+    if (!projectId) return;
+    api.get(`/projects/${projectId}/setbacks`)
+      .then(({ data }) => setLimits(data))
+      .catch(() => setLimits(null));
+  }, [projectId, setbacks.front, setbacks.rear, setbacks.side, setbacks.default]);
+
+  const limitFor = (edge) =>
+    (limits?.edges || []).find((e) => e.edge === edge) || null;
+
   const setSetback = (key, value) =>
     update((p) => {
       p.dev_controls = p.dev_controls || {};
@@ -104,18 +118,55 @@ export default function DevControlsModule({ project, analysis, update, readOnly 
         }
       >
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {["front", "rear", "side", "default"].map((k) => (
-            <NumField
-              key={k}
-              label={k === "default" ? "Default (unclassified edges)" : `${k[0].toUpperCase()}${k.slice(1)} setback`}
-              suffix="m"
-              value={setbacks[k]}
-              disabled={readOnly}
-              testid={`dc-setback-${k}`}
-              onChange={(v) => setSetback(k, v)}
-            />
-          ))}
+          {["front", "rear", "side", "default"].map((k) => {
+            const lim = limitFor(k);
+            return (
+              <div key={k} className="space-y-1">
+                <NumField
+                  label={k === "default" ? "Default (unclassified edges)" : `${k[0].toUpperCase()}${k.slice(1)} setback`}
+                  suffix="m"
+                  value={setbacks[k]}
+                  disabled={readOnly}
+                  testid={`dc-setback-${k}`}
+                  onChange={(v) => setSetback(k, v)}
+                />
+                {lim && (
+                  lim.ok ? (
+                    <p className="text-[10px] text-slate-500 leading-snug"
+                      data-testid={`dc-setback-${k}-min`}>
+                      Minimum {lim.minimum_m} m. {lim.rule}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-red-700 bg-red-50 border border-red-200 rounded-sm px-1.5 py-1 leading-snug"
+                      data-testid={`dc-setback-${k}-error`}>
+                      <span className="font-semibold">
+                        {lim.shortfall_m} m below the {lim.minimum_m} m minimum.
+                      </span>{" "}
+                      {lim.rule} ({lim.clause}).
+                    </p>
+                  )
+                )}
+              </div>
+            );
+          })}
         </div>
+        {limits && !limits.ok && (
+          <p className="text-[11px] text-red-800 bg-red-50 border border-red-200 rounded-sm px-2 py-1.5 mt-3"
+            data-testid="dc-setbacks-invalid">
+            These setbacks are below the statutory minimum and the envelope built from them
+            would not be sanctionable. The minimum rises with building height — this project
+            is {limits.height_m} m tall on a {Math.round(limits.plot_area_sqm).toLocaleString("en-IN")} m²
+            plot. <em>Recommend from plot</em> sets values that clear it.
+          </p>
+        )}
+        {limits?.note && (
+          <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1.5 mt-2"
+            data-testid="dc-setbacks-note">{limits.note}</p>
+        )}
+        <p className="text-[11px] text-slate-500 mt-2">
+          These are the values the site envelope is built from. Plot &amp; Site shows them
+          read-only.
+        </p>
         <p className="text-[11px] text-slate-500 mt-3 flex items-center gap-1.5">
           <Ruler className="h-3 w-3" />
           NBC 2016 Part 3 ties side and rear open space to building height — a taller block

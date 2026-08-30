@@ -74,6 +74,82 @@ def max_height_from_road(road_width: float, front_setback: float) -> float:
     return HEIGHT_ROAD_MULTIPLIER * (road_width + front_setback)
 
 
+def setback_minimums(plot_area: float, road_width: float = 0.0,
+                     height_m: float = 0.0) -> Dict[str, Any]:
+    """The statutory minimum for each edge, with the rule that produced it.
+
+    One place decides what "too small" means, so the module that edits setbacks and the
+    engine that builds the envelope cannot disagree about it. Each entry names the rule
+    rather than just returning a number -- a value rejected without a reason is a value the
+    user will simply override.
+
+    Front is the larger of the plot-size minimum and the height-driven open space: a large
+    plot and a tall building each set a floor, and the binding one is whichever is higher.
+    """
+    by_plot = front_setback_for_plot(plot_area)
+    by_height = open_space_for_height(height_m) if height_m else 0.0
+    front = max(by_plot, by_height)
+    front_rule = ("plot area" if by_plot >= by_height else "building height")
+
+    sides = by_height or open_space_for_height(0.0)
+
+    out = {
+        "front": {
+            "minimum_m": round(front, 2),
+            "rule": (f"NBC 2016 Part 3 — {front_rule}: "
+                     f"{by_plot} m for a {plot_area:,.0f} m2 plot, "
+                     f"{by_height} m for {height_m:g} m of height; the larger governs"),
+            "clause": "NBC 2016 Part 3, Cl. 8",
+        },
+        "rear": {
+            "minimum_m": round(sides, 2),
+            "rule": f"NBC 2016 Part 3 — open space for {height_m:g} m of building height",
+            "clause": "NBC 2016 Part 3, Cl. 8",
+        },
+        "side": {
+            "minimum_m": round(sides, 2),
+            "rule": f"NBC 2016 Part 3 — open space for {height_m:g} m of building height",
+            "clause": "NBC 2016 Part 3, Cl. 8",
+        },
+        "default": {
+            "minimum_m": round(sides, 2),
+            "rule": "Applied to any edge not classified as front, rear or side",
+            "clause": "NBC 2016 Part 3, Cl. 8",
+        },
+    }
+    if road_width and road_width < MIN_ROAD_FOR_HIGHRISE:
+        out["_note"] = (f"The abutting road is {road_width:g} m. Most authorities refuse "
+                        f"high-rise below {MIN_ROAD_FOR_HIGHRISE:g} m of frontage whatever "
+                        "the setbacks are.")
+    return out
+
+
+def validate_setbacks(applied: Dict[str, Any], plot_area: float,
+                      road_width: float = 0.0, height_m: float = 0.0) -> Dict[str, Any]:
+    """Check applied setbacks against the statutory minimums.
+
+    Returns one row per edge carrying the applied value, the minimum, whether it clears it
+    and by how much. The caller decides what to do about a failure -- this only reports.
+    """
+    mins = setback_minimums(plot_area, road_width, height_m)
+    rows = []
+    for edge in ("front", "rear", "side", "default"):
+        rule = mins[edge]
+        try:
+            value = float(applied.get(edge) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        minimum = rule["minimum_m"]
+        rows.append({
+            "edge": edge, "applied_m": round(value, 2), "minimum_m": minimum,
+            "ok": value + 1e-9 >= minimum,
+            "shortfall_m": round(max(minimum - value, 0), 2),
+            "rule": rule["rule"], "clause": rule["clause"],
+        })
+    return {"edges": rows, "ok": all(r["ok"] for r in rows),
+            "note": mins.get("_note", "")}
+
+
 @dataclass
 class Recommendation:
     key: str

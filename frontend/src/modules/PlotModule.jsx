@@ -20,12 +20,17 @@ const LAYER_STYLE = {
   tower: { color: "#1D4ED8", weight: 1.5, fillColor: "#2563EB", fillOpacity: 0.8 },
 };
 
-export default function PlotModule({ project, analysis, update, readOnly }) {
+export default function PlotModule({ project, analysis, update, readOnly, goToModule }) {
   const plot = project.plot || {};
   const coords = plot.coordinates || [];
   const areas = analysis?.areas;
 
-  const [setbacks, setSetbacks] = useState({ default: 6, front: 9, rear: 4.5, side: 4.5 });
+  // Setbacks are owned by Setbacks & Controls and stored on the project. They used to be
+  // local state here as well, so a user could set one value there, see a different one
+  // here, and get an envelope built from this one. The seed matches the old local default
+  // so a project saved before they were stored behaves exactly as it did.
+  const setbacks = (project.dev_controls || {}).setbacks
+    || { default: 6, front: 9, rear: 4.5, side: 4.5 };
   const [road, setRoad] = useState({ ring_width: 6, driveway_width: 4.5, max_distance_to_road: 45 });
   const [towerCfg, setTowerCfg] = useState({ max_towers: "", floors_min: 4, floors_max: 24 });
   const [layout, setLayout] = useState(null);
@@ -137,7 +142,7 @@ export default function PlotModule({ project, analysis, update, readOnly }) {
 
       <Section
         title="Site layout engine"
-        description="Setbacks are measured inward from the boundary; front applies to edges marked road-facing below, rear is the edge opposite them. Reserve additionally carves the access ring, driveways and amenity blocks out of the envelope."
+        description="These are the setbacks the envelope is built from. They are edited in Setbacks & Controls, which knows the statutory minimum for each edge — they used to be editable here too, which let the two screens disagree. Setbacks are measured inward from the boundary; front applies to edges marked road-facing below, rear is the edge opposite them. Reserve additionally carves the access ring, driveways and amenity blocks out of the envelope."
         testid="site-layout-section"
         actions={
           <div className="flex gap-1.5">
@@ -175,15 +180,25 @@ export default function PlotModule({ project, analysis, update, readOnly }) {
       >
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {["default", "front", "rear", "side"].map((k) => (
-            <NumField
-              key={k}
-              label={`Setback — ${k}`}
-              suffix="m"
-              value={setbacks[k]}
-              testid={`setback-${k}-input`}
-              onChange={(v) => setSetbacks((s) => ({ ...s, [k]: v }))}
-            />
+            <div key={k} className="space-y-1" data-testid={`setback-${k}-readout`}>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                Setback — {k}
+              </div>
+              <div className="h-9 flex items-center font-mono text-sm text-slate-900">
+                {num(setbacks[k], 2)} <span className="text-[11px] text-slate-400 ml-1">m</span>
+              </div>
+            </div>
           ))}
+          <div className="space-y-1 col-span-2 md:col-span-4">
+            <button
+              type="button"
+              onClick={() => goToModule?.("controls")}
+              className="text-[11px] text-blue-700 hover:underline"
+              data-testid="edit-setbacks-link"
+            >
+              Edit in Setbacks &amp; Controls →
+            </button>
+          </div>
           <NumField label="Access ring width" suffix="m" value={road.ring_width} testid="road-ring-width-input"
                     onChange={(v) => setRoad((r) => ({ ...r, ring_width: v }))} />
           <NumField label="Driveway width" suffix="m" value={road.driveway_width} testid="road-driveway-width-input"

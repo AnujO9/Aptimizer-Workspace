@@ -72,6 +72,9 @@ const EDITABLE = [
   // The programme config holds the user's per-task edits; without it a reload silently
   // discards them and the table quietly reverts to the generated plan.
   "schedule",
+  // Setbacks live under dev_controls and are the one value the envelope is built from.
+  // Without this every setback edit was discarded on reload.
+  "dev_controls",
 ];
 
 export default function Workspace() {
@@ -231,6 +234,7 @@ export default function Workspace() {
               readOnly={readOnly}
               projectId={projectId}
               setProject={setProject}
+              goToModule={setActive}
             />
           )}
         </main>

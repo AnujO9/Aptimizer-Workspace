@@ -294,7 +294,11 @@ async def patch_project(project_id: str, body: ProjectPatch, user: dict = Depend
                # The programme config carries the user's per-task edits, so it has to be
                # saved with the project: a snapshot must reproduce the programme the user
                # actually approved, not the generated one underneath it.
-               "schedule", "finance", "solar"}
+               "schedule", "finance", "solar",
+               # Setbacks live under dev_controls and are the one stored value the site
+               # envelope is built from. It was in neither this set nor the frontend's
+               # editable list, so every setback edit was silently discarded on reload.
+               "dev_controls"}
     updates = {k: v for k, v in body.updates.items() if k in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -655,6 +659,11 @@ async def site_layout_plan_live(body: SiteLayoutLiveIn,
     return siteplanlib.plan_site(body.project, body.config)
 
 
+# What PlotModule used to hold in local state. Kept as the seed so a project saved before
+# setbacks were stored behaves exactly as it did.
+DEFAULT_SETBACKS = {"default": 6.0, "front": 9.0, "rear": 4.5, "side": 4.5}
+
+
 class RecommendIn(BaseModel):
     plot_area_sqm: float
     road_width_m: float = 0.0
@@ -672,6 +681,28 @@ async def site_layout_recommend(body: RecommendIn, user: dict = Depends(get_curr
         plot_area=body.plot_area_sqm, road_width=body.road_width_m,
         city=body.city, state=body.state, floor_height=body.floor_height,
         area_per_unit=body.area_per_unit, far_override=body.far_override)
+
+
+@api.get("/projects/{project_id}/setbacks")
+async def project_setbacks(project_id: str, user: dict = Depends(get_current_user)):
+    """The applied setbacks, the statutory minimum for each edge, and whether they clear it.
+
+    One endpoint so the module that edits setbacks and the engine that builds the envelope
+    cannot disagree about what the minimum is.
+    """
+    proj = await load_project(project_id, user)
+    an = engine.analyse(proj)
+    applied = ((proj.get("dev_controls") or {}).get("setbacks")
+               or DEFAULT_SETBACKS)
+    plot = proj.get("plot") or {}
+    edges = plot.get("road_edges") or []
+    road_width = max([float(e.get("width") or 0) for e in edges] or [0.0])
+    check = siteplanlib.validate_setbacks(
+        applied, plot_area=float(an["areas"]["plot_area_sqm"] or 0),
+        road_width=road_width, height_m=float(an["areas"]["max_height_m"] or 0))
+    return {**check, "applied": applied, "road_width_m": road_width,
+            "height_m": an["areas"]["max_height_m"],
+            "plot_area_sqm": an["areas"]["plot_area_sqm"]}
 
 
 @api.get("/site-layout/defaults")
