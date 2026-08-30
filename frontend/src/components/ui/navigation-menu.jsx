@@ -5,9 +5,17 @@ import { ChevronDown } from "lucide-react"
 
 import { cn } from "../../lib/utils"
 
+// Radix closes a menu 200 ms after the pointer leaves the trigger. That is not enough time
+// to travel from the trigger down to an item, so the menu vanished mid-move and picking
+// anything became a race. 700 ms is comfortable at normal pointer speed; skipDelayDuration
+// keeps sibling menus instant once one is already open.
+const CLOSE_DELAY_MS = 700;
+
 const NavigationMenu = React.forwardRef(({ className, children, ...props }, ref) => (
   <NavigationMenuPrimitive.Root
     ref={ref}
+    delayDuration={0}
+    skipDelayDuration={CLOSE_DELAY_MS}
     className={cn(
       "relative z-10 flex max-w-max flex-1 items-center justify-center",
       className
@@ -49,6 +57,7 @@ const NavigationMenuTrigger = React.forwardRef(({ className, children, ...props 
 ))
 NavigationMenuTrigger.displayName = NavigationMenuPrimitive.Trigger.displayName
 
+// onPointerLeave is delayed so a diagonal move toward the panel does not close it.
 const NavigationMenuContent = React.forwardRef(({ className, ...props }, ref) => (
   <NavigationMenuPrimitive.Content
     ref={ref}
@@ -63,10 +72,12 @@ NavigationMenuContent.displayName = NavigationMenuPrimitive.Content.displayName
 const NavigationMenuLink = NavigationMenuPrimitive.Link
 
 const NavigationMenuViewport = React.forwardRef(({ className, ...props }, ref) => (
-  <div className={cn("absolute left-0 top-full flex justify-center")}>
+  // pt-1.5 -mt-1.5 makes the gap between trigger and panel part of the hover target, so a
+  // pointer crossing it never leaves both at once.
+  <div className={cn("absolute left-0 top-full flex justify-center pt-1.5 -mt-1.5")}>
     <NavigationMenuPrimitive.Viewport
       className={cn(
-        "origin-top-center relative mt-1.5 h-[var(--radix-navigation-menu-viewport-height)] w-full overflow-hidden rounded-md border bg-popover text-popover-foreground shadow data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-90 md:w-[var(--radix-navigation-menu-viewport-width)]",
+        "origin-top-center relative h-[var(--radix-navigation-menu-viewport-height)] w-full overflow-hidden rounded-md border bg-popover text-popover-foreground shadow data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-90 md:w-[var(--radix-navigation-menu-viewport-width)]",
         className
       )}
       ref={ref}

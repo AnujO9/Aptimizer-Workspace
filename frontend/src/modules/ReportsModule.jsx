@@ -78,10 +78,7 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[11px] text-slate-500 max-w-xl">
-          Eleven reports, one per subject. Every module is represented — quantities sit
-          inside the BOQ, accessibility and development controls inside Compliance, and
-          utility sizing inside Water &amp; Sanitation, because in each case the two
-          documents carried the same figures.
+          Eleven reports, grouped as in the menu.
         </p>
         <Button
           className="rounded-sm"

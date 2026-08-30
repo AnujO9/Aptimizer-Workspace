@@ -44,8 +44,8 @@ export default function CalculationsModule({ project, analysis, update, readOnly
             disabled={readOnly} onChange={(v) => setCfg("fsi_factor", v)} testid="config-fsi-factor-input" />
         </div>
         <p className="text-[11px] text-slate-500 mt-3">
-          Built-up = (carpet + balcony) × (1 + wall allowance) + service core. Super built-up = built-up × (1 + loading).
-          FSI = FAR × FSI factor (set to 1.0 where the region treats them identically).
+          Built-up = (carpet + balcony) × (1 + wall allowance) + service core.
+          Super built-up = built-up × (1 + loading). FSI = FAR × FSI factor.
         </p>
       </Section>
 

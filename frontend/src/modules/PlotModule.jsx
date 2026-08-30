@@ -142,7 +142,7 @@ export default function PlotModule({ project, analysis, update, readOnly, goToMo
 
       <Section
         title="Site layout engine"
-        description="These are the setbacks the envelope is built from. They are edited in Setbacks & Controls, which knows the statutory minimum for each edge — they used to be editable here too, which let the two screens disagree. Setbacks are measured inward from the boundary; front applies to edges marked road-facing below, rear is the edge opposite them. Reserve additionally carves the access ring, driveways and amenity blocks out of the envelope."
+        description="Setbacks are measured inward from the boundary. Edit them in Setbacks & Controls."
         testid="site-layout-section"
         actions={
           <div className="flex gap-1.5">

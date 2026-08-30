@@ -129,7 +129,7 @@ export default function OptimiserPanel({ projectId, only = "cost", readOnly, cur
   return (
     <Section
       title="Optimisers"
-      description="Each one searches for a better version of this scheme and reports what it would take to get there. Nothing is applied automatically."
+      description="What the scheme does now, the best found, and the change needed. Nothing is applied automatically."
       testid={`optimisers-${only}`}
       actions={
         <Button onClick={() => run()} disabled={busy || readOnly} className="rounded-sm h-8"
@@ -160,8 +160,7 @@ export default function OptimiserPanel({ projectId, only = "cost", readOnly, cur
             Search for it
           </Button>
           <p className="text-[10px] text-slate-500 max-w-sm leading-snug">
-            Leave blank to search for 10% under today's cost. The search only ever proposes
-            changes that still meet the code.
+            Blank searches for 10% under today's cost. Only code-compliant changes are proposed.
           </p>
         </div>
       )}

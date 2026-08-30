@@ -127,9 +127,8 @@ export default function FinanceModule({ project, projectId, readOnly, setProject
         <span className="font-semibold text-slate-700">Margin</span> is profit as a share of
         sales; <span className="font-semibold text-slate-700">return on cost</span> is profit
         against the money spent.{" "}
-        <span className="font-semibold text-slate-700">IRR</span> is the yearly rate this
-        project earns on the money while it is tied up — it counts <em>when</em> cash arrives,
-        so a slow-selling scheme scores worse than a fast one on identical profit.
+        <span className="font-semibold text-slate-700">IRR</span> is the yearly return on
+        money while it is tied up, so timing matters as well as profit.
       </p>
 
       {err && (
@@ -141,7 +140,7 @@ export default function FinanceModule({ project, projectId, readOnly, setProject
 
       <Section
         title="Assumptions"
-        description="Everything the engineering model cannot know: what the flats sell for, what the land and money cost, and when the cash moves."
+        description="Sale price, land and finance costs, and when the cash moves."
         testid="finance-config"
         actions={
           <Button onClick={() => run()} disabled={busy || readOnly} className="rounded-sm h-8"
@@ -154,7 +153,7 @@ export default function FinanceModule({ project, projectId, readOnly, setProject
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           <NumField label="Sale rate (₹/sqft)" value={cfg.sale_rate_per_sqft} disabled={readOnly}
             onChange={(v) => set("sale_rate_per_sqft", v)} testid="finance-rate"
-            hint="Asking price per square foot of saleable area. Amenities are not priced — you do not sell the clubhouse." />
+            hint="Price per sqft of saleable area. Amenities are not priced." />
           <NumField label="Land cost (₹)" value={cfg.land_cost} disabled={readOnly}
             onChange={(v) => set("land_cost", v)} testid="finance-land"
             hint="Paid up front, before any construction spend." />
@@ -166,34 +165,34 @@ export default function FinanceModule({ project, projectId, readOnly, setProject
             hint="Covered parking, club membership, transfer fees." />
           <NumField label="Marketing (% of sales)" value={cfg.marketing_pct} disabled={readOnly}
             onChange={(v) => set("marketing_pct", v)} testid="finance-marketing"
-            hint="Brokerage and advertising, charged against revenue." />
+            hint="Brokerage and advertising." />
           <NumField label="Contingency (% of build)" value={cfg.contingency_pct} disabled={readOnly}
             onChange={(v) => set("contingency_pct", v)} testid="finance-contingency"
-            hint="Reserve for what the estimate has not foreseen." />
+            hint="Reserve for unforeseen cost." />
           <NumField label="Borrowed share (%)" value={cfg.debt_ratio} disabled={readOnly}
             onChange={(v) => set("debt_ratio", v)} testid="finance-debt"
-            hint="How much of the project is funded by a loan rather than your own money." />
+            hint="Share funded by a loan." />
           <NumField label="Interest rate (%/yr)" value={cfg.interest_rate_pct} disabled={readOnly}
             onChange={(v) => set("interest_rate_pct", v)} testid="finance-interest"
-            hint="Charged on the average drawn balance over the build, not the full loan for the full term." />
+            hint="Charged on the average drawn balance over the build." />
           <NumField label="Build time (months)" value={cfg.construction_months} disabled={readOnly}
             onChange={(v) => set("construction_months", v)} testid="finance-months"
-            hint="Spend follows the usual slow-fast-slow curve: foundations are cheap, the frame is not." />
+            hint="Spend follows a slow-fast-slow curve." />
           <NumField label="Launch (month)" value={cfg.sales_start_month} disabled={readOnly}
             onChange={(v) => set("sales_start_month", v)} testid="finance-launch"
-            hint="When flats first go on sale — usually well before the building is finished." />
+            hint="When flats first go on sale." />
           <NumField label="Selling period (months)" value={cfg.sales_months} disabled={readOnly}
             onChange={(v) => set("sales_months", v)} testid="finance-sales-months"
             hint="How long the stock takes to clear from launch." />
           <NumField label="Sold at launch (%)" value={cfg.presale_pct} disabled={readOnly}
             onChange={(v) => set("presale_pct", v)} testid="finance-presale"
-            hint="Pre-launch bookings that land as a lump on day one." />
+            hint="Pre-launch bookings, taken on day one." />
         </div>
       </Section>
 
       {fin && (
         <Section title="Money in and out, month by month"
-          description="The line is cash in hand. It goes deep before it recovers — that low point is what the project has to be funded to."
+          description="Cash in hand each month. The low point is what the project must be funded to."
           testid="finance-cashflow">
           <ResponsiveContainer width="100%" height={240}>
             <AreaChart data={fin.cash_flow} margin={{ top: 8, right: 8, left: 8, bottom: 4 }}>

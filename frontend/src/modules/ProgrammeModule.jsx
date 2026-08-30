@@ -235,14 +235,36 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
 
   useEffect(() => { run(); /* eslint-disable-next-line */ }, [projectId]);
 
-  const apply = (next) => {
-    setCfg(next);
-    run(next);
-    // Persist through the workspace's own autosave, so edits survive a reload and a saved
-    // version carries them into a revision comparison.
+  // The saved config is the source of truth. Re-seeding on it means returning to this tab
+  // shows what the user left, not a fresh default.
+  useEffect(() => {
+    const saved = project?.schedule;
+    if (saved && Object.keys(saved).length) setCfg((c) => ({ ...c, ...saved }));
+    // eslint-disable-next-line
+  }, [projectId]);
+
+  // Everything the user changes goes to the project immediately. The module unmounts when
+  // the user switches tabs, so anything held only in local state is gone the moment they
+  // navigate away -- which is what used to happen to the finish date, the task names and
+  // every per-task edit.
+  const persist = (next) => {
     if (!readOnly) update?.((p) => { p.schedule = next; });
   };
-  const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
+
+  const apply = (next) => {
+    setCfg(next);
+    persist(next);
+    run(next);
+  };
+
+  // Config fields (dates, site setup, crew) used to call setCfg only, so they were saved
+  // by nothing at all. They persist now; the re-plan still waits for the Re-plan button
+  // so typing a date does not fire a request per keystroke.
+  const set = (k, v) => setCfg((c) => {
+    const next = { ...c, [k]: v };
+    persist(next);
+    return next;
+  });
 
   // One override object per task. Merging rather than replacing means editing the crew
   // does not silently discard a pinned date the user set earlier.
@@ -412,7 +434,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
 
       <Section
         title="Programme assumptions"
-        description="Durations are derived from the project's own quantities: work days = quantity ÷ (daily output × crew). Enter a finish date and the crews are sized to hit it instead."
+        description="Work days = quantity ÷ (daily output × crew). Set a finish date to size the crews for it."
         testid="prog-config"
         actions={
           <Button onClick={() => run()} disabled={busy || readOnly} className="rounded-sm h-8" data-testid="prog-run">
@@ -427,7 +449,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
             <Input type="date" className="h-9 rounded-sm" value={cfg.start_date} disabled={readOnly}
               onChange={(e) => set("start_date", e.target.value)} data-testid="prog-start-input" />
             <p className="text-[10px] leading-snug text-slate-500">
-              The day the site is handed over and work can begin.
+              When work can begin on site.
             </p>
           </div>
           <div className="space-y-1">
@@ -436,24 +458,23 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
               min={cfg.start_date} onChange={(e) => set("target_finish", e.target.value)}
               data-testid="prog-target-input" />
             <p className="text-[10px] leading-snug text-slate-500">
-              Optional. Set a date and the crews are sized to hit it. Leave blank to see how long
-              the job takes on its own.
+              Optional. Crews are sized to hit it.
             </p>
           </div>
           <NumField label="Site setup (days)" value={cfg.mobilisation_days} disabled={readOnly}
             onChange={(v) => set("mobilisation_days", v)} testid="prog-mobilisation-input"
-            hint="Days needed to set up the site — offices, fencing, water, power — before actual building begins." />
+            hint="Site setup before building starts: offices, fencing, water, power." />
           <NumField label="Masonry starts after (floors)" value={cfg.blockwork_lag_floors} disabled={readOnly}
             onChange={(v) => set("blockwork_lag_floors", v)} testid="prog-blocklag-input"
-            hint="How many floors ahead the concrete frame must be before wall work begins. Higher = safer but slower." />
+            hint="Floors the frame stays ahead of wall work. Higher is safer, slower." />
           <NumField label="Concrete crew size" value={cfg.crews.concretor || 6} disabled={readOnly}
             onChange={(v) => setCfg((c) => ({ ...c, crews: { ...c.crews, concretor: v } }))}
             testid="prog-crew-concretor"
-            hint="Number of concrete teams working at the same time. More teams = faster, but limited by drying/curing time." />
+            hint="Concrete teams working at once. More is faster, up to the curing limit." />
         </div>
       </Section>
 
-      <Section title="Phase timeline" description="Each bar spans that phase's first start to its last finish; phases overlap by design."
+      <Section title="Phase timeline" description="Each bar spans a phase from first start to last finish."
         testid="prog-timeline">
         {!plan?.phases?.length ? (
           <p className="text-sm text-slate-500">Run the programme to see the timeline.</p>
@@ -491,7 +512,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
 
       <Section
         title="Phase breakdown"
-        description="Open a phase to read the tasks it is made of — what each one waits for, how long it takes, how many people it needs and what it costs. A phase's days are calendar days end to end; a task's are working days, so Sundays, holidays and monsoon stoppages are not counted. A red dot marks the critical path: a day lost there is a day lost on the completion date."
+        description="Open a phase to see its tasks. Phase days are calendar days; task days are working days. A red dot marks the critical path."
         testid="prog-phase-table"
         actions={
           <div className="flex items-center gap-2">
@@ -592,37 +613,30 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
             <div className="mt-3 space-y-1 text-[10px] text-slate-500 leading-snug">
               <p>
                 <span className="font-semibold text-slate-700">Every cell is editable.</span>{" "}
-                Click a task name to rename it; type over the days, crew or cost; set a date
-                to pin it. Edited cells carry a blue edge, and the reset arrow on a row puts
-                its generated values back.
+                Click a name to rename it. Type over days, crew or cost. Set a date to pin it.
+                Edited cells show a blue edge; the reset arrow restores the original.
               </p>
               <p>
-                <span className="font-semibold text-slate-700">What wins when edits
-                disagree:</span> a pinned date beats an edited Days, which beats an edited
-                Crew, which beats the generated figure. Change only the crew and the days
-                recalculate from the quantity; change the days as well and your duration
-                stands.
+                <span className="font-semibold text-slate-700">If edits disagree:</span>{" "}
+                pinned date &gt; days &gt; crew &gt; generated. Change crew alone and days
+                recalculate.
               </p>
               <p>
-                <span className="font-semibold text-slate-700">Dragging changes the order
-                you see, not the plan.</span> What happens when is set by what each task
-                waits for, so a row moved up the list keeps its dates.
+                Dragging changes the display order only — dates follow the dependencies.
               </p>
               <p>
-                A pinned date that arrives earlier than the work allows is refused, and the
-                row says which task is blocking it. Curing and prop-removal periods are
-                fixed by IS 456 and no pinned date shortens them.
+                A date earlier than the work allows is refused; the row names the blocker.
+                Curing and prop-removal times are fixed by IS 456.
               </p>
               <p>
-                An edited cost changes the phase and project totals but never the BOQ — the
-                variance line below reports the gap.
+                An edited cost changes the phase and project totals, not the BOQ.
               </p>
             </div>
             {!readOnly && <AddTaskRow byPhase={byPhase} onAdd={addTask} disabled={busy} />}
             {plan.floats_verified === false && (
               <p className="text-[10px] text-slate-400 mt-2">
-                Spare time per task is an upper bound on a programme this size — the critical
-                path and every date above are exact.
+                Spare time per task is an upper bound at this size. Dates and the critical
+                path are exact.
               </p>
             )}
           </>

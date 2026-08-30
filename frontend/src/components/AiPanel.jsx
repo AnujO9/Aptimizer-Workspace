@@ -21,7 +21,45 @@ import { dt } from "../lib/format";
 const esc = (s) => String(s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const inline = (line) => esc(line)
+// The prompt forbids LaTeX, but a stored answer from before that rule -- or an occasional
+// slip -- would otherwise reach the reader as raw \frac{}{} and $$ markers. Converted to
+// the plain notation an engineer writes by hand rather than left as source code.
+//
+// ORDER MATTERS. Inner commands are resolved first so that by the time \frac is matched,
+// its two braces contain no nested braces of their own -- \frac{a}{\sqrt{b}} otherwise
+// fails to match at all and ships as literal source.
+const delatex = (s) => {
+  let t = String(s).replace(/\$\$?/g, "");
+  // 1. symbols and operators
+  t = t
+    .replace(/\\times|\\cdot/g, "x")
+    .replace(/\\div/g, "/")
+    .replace(/\\approx/g, "~")
+    .replace(/\\leq/g, "<=").replace(/\\geq/g, ">=").replace(/\\neq/g, "!=")
+    .replace(/\\pm/g, "+/-")
+    .replace(/\\(alpha|beta|gamma|delta|theta|lambda|mu|sigma|phi|rho|pi|omega)\b/g, "$1")
+    .replace(/\\left|\\right/g, "");
+  // 2. braced commands, innermost first -- repeat until nothing changes
+  for (let i = 0; i < 6; i++) {
+    const before = t;
+    t = t
+      .replace(/\\(?:text|mathrm|mathbf|mathit|mathsf)\s*\{([^{}]*)\}/g, "$1")
+      .replace(/\\sqrt\s*\{([^{}]*)\}/g, "sqrt($1)")
+      .replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, "($1) / ($2)")
+      .replace(/_\{([^{}]*)\}/g, "$1")
+      .replace(/\^\{([^{}]*)\}/g, "^$1");
+    if (t === before) break;
+  }
+  // 3. anything still carrying a backslash loses it rather than being shown as source
+  return t
+    .replace(/\\[,;:!]/g, " ")
+    .replace(/\\([a-zA-Z]+)/g, "$1")
+    .replace(/_(?=[A-Za-z0-9])/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+};
+
+const inline = (line) => esc(delatex(line))
   .replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-900">$1</strong>')
   .replace(/`(.+?)`/g, '<code class="font-mono text-xs bg-slate-100 px-1 rounded-sm">$1</code>');
 
@@ -35,7 +73,7 @@ export const Markdown = ({ text, testid = "ai-summary-text" }) => {
       if (fence) {
         out.push(
           <pre key={`f${i}`} className="bg-slate-900 text-slate-100 rounded-sm p-2.5 overflow-x-auto">
-            <code className="font-mono text-xs whitespace-pre">{fence.join("\n")}</code>
+            <code className="font-mono text-xs whitespace-pre">{delatex(fence.join("\n"))}</code>
           </pre>
         );
         fence = null;
@@ -74,7 +112,7 @@ export const Markdown = ({ text, testid = "ai-summary-text" }) => {
   if (fence && fence.length) {
     out.push(
       <pre key="f-open" className="bg-slate-900 text-slate-100 rounded-sm p-2.5 overflow-x-auto">
-        <code className="font-mono text-xs whitespace-pre">{fence.join("\n")}</code>
+        <code className="font-mono text-xs whitespace-pre">{delatex(fence.join("\n"))}</code>
       </pre>
     );
   }
