@@ -885,10 +885,16 @@ def m12_grid(project, base, e):
                         "selected": abs(ox - bx) < 0.01 and abs(oy - by) < 0.01})
     best = max(options, key=lambda o: (o["plot_utilisation_pct"], -o["columns"]))
 
+    # Beam runs over this grid: drawable lines with spans, sections and continuity.
+    # End bays are sized simply supported and interior bays continuous, which is how they
+    # behave -- sizing a whole run as continuous under-sizes the ends.
+    layout = takeofflib.beam_layout(bx, by, bays_x, bays_y,
+                                    float(e.get("slab_thickness_mm") or 125.0))
+
     return {
         "id": "grid", "title": "Column Grid Optimizer", "codes": ["IS 456:2000", "IS 3861:2002"],
         "missing": [] if length else ["Plot length / width or polygon (Plot & Site)"],
-        "options": options, "clashes": clashes,
+        "options": options, "clashes": clashes, "beam_layout": layout,
         "outputs": [
             out("Plot envelope used", f"{length} × {width}", "m", "grid"),
             out("Selected grid", f"{bx} × {by}", "m", "grid"),
@@ -900,6 +906,14 @@ def m12_grid(project, base, e):
                 f"corridor {corridor} m vs {bx} m bay"),
             out("Columns inside usable room space", len(clashes), "nos", "grid",
                 "shift the grid or absorb these columns into walls" if clashes else "no clashes detected"),
+            out("Beams in the frame", layout["summary"].get("beam_count", 0), "nos", "beam_depth",
+                "{} continuous over interior supports, {} simply supported at the ends".format(
+                    layout["summary"].get("continuous", 0),
+                    layout["summary"].get("simply_supported", 0))),
+            out("Distinct beam sections", layout["summary"].get("distinct_sections", 0), "nos", "beam_depth",
+                "fewer sections means fewer formwork sets and less rework on site"),
+            out("Deepest beam", layout["summary"].get("deepest_mm", 0), "mm", "beam_depth",
+                "governs the floor-to-floor height along with the slab and services"),
         ],
         "recommendation": {"label": "Most efficient grid", "value": f"{best['bay']} — {best['plot_utilisation_pct']}% "
                                                                    f"plot utilisation, {best['columns']} columns",

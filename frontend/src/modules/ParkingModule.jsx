@@ -1,9 +1,10 @@
 import { AlertTriangle, Check, X } from "lucide-react";
 import { Metric, NumField, Section } from "../components/Field";
+import OptimiserPanel from "../components/OptimiserPanel";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { int, num } from "../lib/format";
 
-export default function ParkingModule({ project, analysis, update, readOnly }) {
+export default function ParkingModule({ project, analysis, update, readOnly, projectId }) {
   const p = project.parking || {};
   const r = analysis?.parking;
   const set = (k, v) => update((x) => { x.parking[k] = v; });
@@ -189,6 +190,8 @@ export default function ParkingModule({ project, analysis, update, readOnly }) {
           ))}
         </ul>
       </Section>
+      <OptimiserPanel projectId={projectId} only="parking" readOnly={readOnly} />
+
     </div>
   );
 }

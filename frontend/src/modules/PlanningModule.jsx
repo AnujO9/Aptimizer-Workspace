@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { Metric, NumField, Section, TextField } from "../components/Field";
+import OptimiserPanel from "../components/OptimiserPanel";
 import { FloorPlate } from "../components/FloorPlate";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -460,6 +461,8 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
           </div>
         </div>
       </Section>
+      <OptimiserPanel projectId={projectId} only="planning" readOnly={readOnly} />
+
     </div>
   );
 }

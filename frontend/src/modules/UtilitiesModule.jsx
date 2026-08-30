@@ -1,7 +1,8 @@
 import { Metric, NumField, Section } from "../components/Field";
+import OptimiserPanel from "../components/OptimiserPanel";
 import { int, num } from "../lib/format";
 
-export default function UtilitiesModule({ project, analysis, update, readOnly }) {
+export default function UtilitiesModule({ project, analysis, update, readOnly, projectId }) {
   const u = analysis?.utilities;
   const cfg = project.utility_config || {};
   const set = (k, v) => update((p) => { p.utility_config[k] = v; });
@@ -44,6 +45,8 @@ export default function UtilitiesModule({ project, analysis, update, readOnly })
           unit count; place them adjacent to the road-access edge defined in Plot & Site.
         </p>
       </Section>
+      <OptimiserPanel projectId={projectId} only="utilities" readOnly={readOnly} />
+
     </div>
   );
 }

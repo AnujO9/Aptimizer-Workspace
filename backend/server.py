@@ -28,6 +28,7 @@ import finance as financelib
 import gis as gislib
 import iscodes as iscodes
 import optimise as optlib
+import planopt as planoptlib
 import layout as layoutlib
 import reports as reportlib
 import schedule as schedlib
@@ -924,6 +925,35 @@ async def ai_optimise(project_id: str, body: OptimiseIn = OptimiseIn(),
     }
     return await _run_ai("optimise", context, store_at="ai.optimise",
                          project_id=project_id, user=user, activity="ai.optimise")
+
+
+@api.post("/projects/{project_id}/optimise/planning")
+async def project_plan_optimise(project_id: str, user: dict = Depends(get_current_user)):
+    """Floor, FAR, FSI, open space, mix, parking and utility optimisers."""
+    proj = await load_project(project_id, user)
+    return planoptlib.analyse(proj, engine.analyse(proj))
+
+
+@api.post("/projects/{project_id}/ai/planning")
+async def ai_planning(project_id: str, user: dict = Depends(get_current_user)):
+    proj = await load_project(project_id, user, write=True)
+    an = engine.analyse(proj)
+    opt = planoptlib.analyse(proj, an)
+    context = {
+        "project": {"name": proj.get("name"), "location": proj.get("location")},
+        "scheme": {"far": an["areas"]["far"], "units": an["areas"]["total_units"],
+                   "open_space_pct": an["areas"]["open_space_pct"],
+                   "max_height_m": an["areas"]["max_height_m"]},
+        # Decision-shaped parts only. The option grids run to dozens of rows each and say
+        # nothing the reader needs.
+        "optimisers": {
+            k: {"current": v["current"], "best": v["best"], "delta": v["delta"],
+                "changes": v["changes"], "feasible": v["feasible"], "notes": v["notes"]}
+            for k, v in opt.items() if isinstance(v, dict) and "current" in v
+        },
+    }
+    return await _run_ai("planning", context, store_at="ai.planning",
+                         project_id=project_id, user=user, activity="ai.planning")
 
 
 # ---------------------------------------------------------------- development finance

@@ -71,6 +71,88 @@ def beam_section(span_m: float, support: str = "simply supported") -> tuple:
     return float(w), float(d)
 
 
+def beam_layout(bay_x: float, bay_y: float, bays_x: int, bays_y: int,
+                slab_thickness_mm: float = 125.0) -> Dict[str, Any]:
+    """Beam runs over the column grid: every line, its span, section and continuity.
+
+    Returns drawable geometry -- each beam is a line in plot-local metres between two grid
+    intersections -- rather than a table of sizes, because a size without a position is not
+    a layout and cannot be checked against anything.
+
+    Continuity is the part that matters for the sections. A beam continuous over interior
+    supports carries the same load in a shallower section than a simply supported one
+    (IS 456 Cl. 23.2.1 allows span/depth 26 against 20 for the basic ratio; the preliminary
+    divisors here are 15 and 12). So the END bays of every run are sized as simply
+    supported and the INTERIOR bays as continuous, which is how they actually behave --
+    sizing the whole run off the longest span, or all of it as continuous, is the common
+    error and it under-sizes the ends.
+    """
+    beams: List[Dict[str, Any]] = []
+    if bays_x < 1 or bays_y < 1:
+        return {"beams": [], "runs": [], "summary": {}}
+
+    def add(run_id, idx, x1, y1, x2, y2, span, interior, direction):
+        support = "continuous" if interior else "simply supported"
+        w, d = beam_section(span, support)
+        beams.append({
+            "id": f"{run_id}-{idx}", "run": run_id, "direction": direction,
+            "x1": round(x1, 2), "y1": round(y1, 2), "x2": round(x2, 2), "y2": round(y2, 2),
+            "span_m": round(span, 2), "support": support,
+            "width_mm": w, "depth_mm": d,
+            "span_depth_ratio": round(span * 1000 / d, 1),
+            # Effective flange width is where the slab acts with the beam (IS 456 Cl. 23.1.2).
+            "flange_mm": round(min(w + 12 * slab_thickness_mm, span * 1000 / 6 + w), 0),
+        })
+
+    # Runs along X: one per grid line in Y.
+    for j in range(bays_y + 1):
+        y = j * bay_y
+        run_id = f"BX{j + 1}"
+        for i in range(bays_x):
+            add(run_id, i + 1, i * bay_x, y, (i + 1) * bay_x, y, bay_x,
+                interior=(bays_x > 1 and 0 < i < bays_x - 1), direction="x")
+
+    # Runs along Y: one per grid line in X.
+    for i in range(bays_x + 1):
+        x = i * bay_x
+        run_id = f"BY{i + 1}"
+        for j in range(bays_y):
+            add(run_id, j + 1, x, j * bay_y, x, (j + 1) * bay_y, bay_y,
+                interior=(bays_y > 1 and 0 < j < bays_y - 1), direction="y")
+
+    runs: Dict[str, Dict[str, Any]] = {}
+    for b in beams:
+        r = runs.setdefault(b["run"], {"run": b["run"], "direction": b["direction"],
+                                       "spans": 0, "length_m": 0.0, "sections": set()})
+        r["spans"] += 1
+        r["length_m"] += b["span_m"]
+        r["sections"].add(f'{int(b["width_mm"])}x{int(b["depth_mm"])}')
+    run_list = [{**r, "length_m": round(r["length_m"], 2),
+                 "sections": sorted(r["sections"])} for r in runs.values()]
+
+    sections: Dict[str, int] = {}
+    for b in beams:
+        key = f'{int(b["width_mm"])} x {int(b["depth_mm"])}'
+        sections[key] = sections.get(key, 0) + 1
+    deepest = max(beams, key=lambda b: b["depth_mm"]) if beams else None
+
+    return {
+        "beams": beams,
+        "runs": sorted(run_list, key=lambda r: r["run"]),
+        "schedule": [{"section_mm": k, "count": v} for k, v in
+                     sorted(sections.items(), key=lambda kv: -kv[1])],
+        "summary": {
+            "beam_count": len(beams),
+            "total_length_m": round(sum(b["span_m"] for b in beams), 1),
+            "distinct_sections": len(sections),
+            "deepest_mm": deepest["depth_mm"] if deepest else 0,
+            "governing_span_m": deepest["span_m"] if deepest else 0,
+            "continuous": sum(1 for b in beams if b["support"] == "continuous"),
+            "simply_supported": sum(1 for b in beams if b["support"] == "simply supported"),
+        },
+    }
+
+
 def mix_proportions(grade: int, exposure_key: str, agg_mm: int) -> Dict[str, float]:
     """IS 10262:2019 proportioning -- kg of cement, sand and aggregate per m3."""
     exposure = C.EXPOSURE.get(exposure_key, C.EXPOSURE["moderate"])

@@ -90,9 +90,12 @@ function Result({ o, currency }) {
  * they would change rather than in a tab of their own.
  */
 const SETS = {
-  quantities: ["waste", "quantity"],
-  boq: ["quantity", "materials"],
-  cost: ["budget", "materials"],
+  quantities: { endpoint: "optimise", keys: ["waste", "quantity"] },
+  boq: { endpoint: "optimise", keys: ["quantity", "materials"] },
+  cost: { endpoint: "optimise", keys: ["budget", "materials"] },
+  planning: { endpoint: "optimise/planning", keys: ["floors", "far", "fsi", "open_space", "mix"] },
+  parking: { endpoint: "optimise/planning", keys: ["parking"] },
+  utilities: { endpoint: "optimise/planning", keys: ["utilities"] },
 };
 
 export default function OptimiserPanel({ projectId, only = "cost", readOnly, currentCost }) {
@@ -101,12 +104,14 @@ export default function OptimiserPanel({ projectId, only = "cost", readOnly, cur
   const [err, setErr] = useState("");
   const [target, setTarget] = useState(0);
 
+  const set = SETS[only] || SETS.cost;
+
   const run = useCallback(async (t) => {
     setBusy(true);
     setErr("");
     try {
-      const { data: d } = await api.post(`/projects/${projectId}/optimise`,
-        { target_budget: t ?? target });
+      const { data: d } = await api.post(`/projects/${projectId}/${set.endpoint}`,
+        set.endpoint === "optimise" ? { target_budget: t ?? target } : {});
       setData(d);
     } catch (e) {
       setData(null);
@@ -114,11 +119,11 @@ export default function OptimiserPanel({ projectId, only = "cost", readOnly, cur
     } finally {
       setBusy(false);
     }
-  }, [projectId, target]);
+  }, [projectId, target, set.endpoint]);
 
-  useEffect(() => { run(0); /* eslint-disable-next-line */ }, [projectId]);
+  useEffect(() => { run(0); /* eslint-disable-next-line */ }, [projectId, only]);
 
-  const wanted = SETS[only] || SETS.cost;
+  const wanted = set.keys;
   const showBudget = wanted.includes("budget");
 
   return (

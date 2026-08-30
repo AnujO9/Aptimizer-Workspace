@@ -392,6 +392,19 @@ PROMPTS = {
         "marks as non-compliant. If an optimiser reports no improvement, say the current "
         "specification is already right rather than inventing one. Under 450 words."
     ),
+    "planning": _BASE + (
+        " These optimisers searched the scheme's planning envelope -- floors, FAR, open "
+        "space, unit mix, parking and utilities -- and each reports what the scheme does "
+        "now, the best compliant alternative found, and the change between them. Write for "
+        "the developer deciding what to build. Sections: **The Big Move** (2-3 sentences on "
+        "the single change with the most value behind it), **What Is Binding** (bullets -- "
+        "for each optimiser that could not go further, which rule stopped it and whether "
+        "that rule is negotiable, e.g. adding parking is a design change while a height "
+        "limit usually is not), **Worth Considering** (bullets, each with its number), and "
+        "**Leave Alone** (bullets -- where the current scheme is already right). Never "
+        "recommend a change the data marks non-compliant. Where an optimiser trades one "
+        "thing for another, name what is given up. Under 500 words."
+    ),
     "compare": _BASE + (
         " Two design schemes for the same project are given. Write: **Headline** (1-2 "
         "sentences naming which scheme is stronger overall and on what grounds), "
