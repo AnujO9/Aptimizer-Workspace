@@ -42,9 +42,9 @@ commit per block.
 
 | Gate | Result |
 |---|---|
-| `pytest` (backend) | **401 passed** |
+| `pytest` (backend) | **432 passed** |
 | `npm run build` (frontend) | **exit 0**, compiled with pre-existing warnings only |
-| New tests added | 102 across `finance_test`, `sustainability_test`, `optimise_test`, `planopt_test`, `beamlayout_test`, `apt_test` |
+| New tests added | 133 across `finance_test`, `sustainability_test`, `optimise_test`, `planopt_test`, `beamlayout_test`, `apt_test`, `payload_test`, `routes_smoke_test` |
 
 Four pre-existing test files are excluded from the gate and were **not** touched:
 `gis_test.py`, `engineering_test.py`, `rbac_v2_test.py`, `backend_test.py`. All four are
@@ -54,7 +54,7 @@ failed the same way before this work began.
 
 ---
 
-## 3. Four decisions that changed an answer
+## 3. Five decisions that changed an answer
 
 These are the places where the obvious implementation produced a wrong number, and the
 tests that now pin the correct one.
@@ -78,6 +78,16 @@ floors, +8 flats, ₹456M → ₹531M, with parking named as the binding rule. P
 quantity but no rate — rate, wastage and amount are only added later in `boq()`. Reading
 rates off the quantity items yielded zero throughout. All optimisers now read from
 `_priced()`. Pinned by `test_rates_are_read_from_the_bill_not_the_quantity_items`.
+
+**A route decorator ended up on the wrong function.** The `_scheme_geometry` helper was
+inserted immediately above `async def compare_versions`, which put it *between* the
+`@api.get(".../versions/compare")` decorator and the function it was meant to decorate.
+The route bound to the helper, FastAPI advertised `doc` and `an` as required query
+parameters, and `compare_versions` was never registered — a working feature, broken, with
+every function-level test still green because they called `_scheme_geometry` directly.
+Only the HTTP smoke test caught it. All 66 routes are now audited for the same shape and
+none of the others is affected. Pinned by
+`test_compare_versions_carries_the_new_metrics_and_geometry`.
 
 **The citation guard flagged correct citations.** The registry stores
 `IS 1893 (Part 1):2016`; engineers — and the APT prompt's own example — write
@@ -107,6 +117,13 @@ All under `/api`, all requiring an authenticated session.
 | GET | `/projects/{id}/ai/chat` | — | `{thread: []}` |
 | DELETE | `/projects/{id}/ai/chat` | — | `{thread: []}` |
 | GET | `/projects/{id}/ai/chat/suggestions` | — | `{suggestions: [str]}` |
+
+`tests/routes_smoke_test.py` exercises each of these over HTTP with auth overridden,
+asserting status, strict JSON (which rejects `NaN`/`Infinity`), and payload shape.
+`tests/payload_test.py` runs every payload through strict JSON on six project shapes —
+healthy, no towers, no units, one floor, no plot, single unit type — plus an all-rates-zero
+project, since that is what every denominator in the codebase sees thirty seconds after
+"new project".
 
 Every optimiser result shares one shape, per constraint 7:
 
@@ -211,8 +228,10 @@ directional rather than authoritative.
   ~150 activities, per-task spare time is reported as an upper bound and the payload says
   so. Dates and the critical path are exact.
 - **No visual verification of the new UI.** The workspace is behind authentication and no
-  credentials were used. Every new surface compiles clean and its data contract is checked
-  against real backend output, but none has been rendered in a browser.
+  credentials were used. Every new surface compiles clean and every one has had its data
+  contract checked against real backend output, and the endpoints behind them are now
+  exercised over HTTP — but no page has been rendered in a browser. The Apt slide-over and
+  the beam framing SVG are the two worth a look first.
 
 ---
 

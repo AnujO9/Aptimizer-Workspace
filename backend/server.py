@@ -350,7 +350,6 @@ async def public_compliance(token: str):
 
 
 # ---------------------------------------------------------------- scheme comparison
-@api.get("/projects/{project_id}/versions/compare")
 def _scheme_geometry(doc, an):
     """Footprint rectangles and tower positions, for comparing two schemes by shape.
 
@@ -425,6 +424,7 @@ def _scheme_geometry(doc, an):
     }
 
 
+@api.get("/projects/{project_id}/versions/compare")
 async def compare_versions(project_id: str, a: str = "", b: str = "",
                            user: dict = Depends(get_current_user)):
     proj = await load_project(project_id, user)
