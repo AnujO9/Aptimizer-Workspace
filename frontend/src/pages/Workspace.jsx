@@ -11,8 +11,7 @@ import { MetricsStrip } from "../components/MetricsStrip";
 import { CommandPalette } from "../components/CommandPalette";
 import AptPanel from "../components/AptPanel";
 import { ProjectNav } from "../components/ProjectNav";
-import DevControlsModule from "../modules/DevControlsModule";
-import PlotModule from "../modules/PlotModule";
+import SiteModule from "../modules/SiteModule";
 import GisModule from "../modules/GisModule";
 import ThreeDModule from "../modules/ThreeDModule";
 import EngineeringModule from "../modules/EngineeringModule";
@@ -34,8 +33,9 @@ import CollaborationModule from "../modules/CollaborationModule";
 // water modules, which is why the two once disagreed on sump size for one project.
 const GROUPS = [
   ["site", "Site", [
-    ["plot", "Plot & Site", Map, PlotModule],
-    ["controls", "Setbacks & Controls", Ruler, DevControlsModule],
+    // Plot and setbacks were two entries that always had to be read together: the
+    // setbacks edited in one are what the other builds its envelope from.
+    ["plot", "Plot & Setbacks", Map, SiteModule],
     ["gis", "GIS Intelligence", Globe2, GisModule],
   ]],
   ["design", "Design", [

@@ -37,8 +37,7 @@ import { Brand } from "@/components/Brand";
 // One line each, describing what the module decides rather than restating its name --
 // "Parking / Parking" tells a first-time user nothing.
 const DESCRIPTIONS = {
-  plot: "Boundary coordinates, area and the site's own geometry",
-  controls: "Setbacks, FAR, height and ground-coverage limits",
+  plot: "Boundary, area and the setback and height limits",
   gis: "Terrain, context and the surroundings of the plot",
   planning: "Unit mix, tower footprints and the floor plate",
   parking: "Required and provided bays, grouped per building",
@@ -48,6 +47,7 @@ const DESCRIPTIONS = {
   boq: "Quantities taken off the designed structure",
   cost: "Rates, wastage and the priced bill",
   programme: "CPM schedule, float and the build duration",
+  finance: "Revenue, margin, ROI and the break-even point",
   compliance: "Rule-by-rule check against the applicable controls",
   reports: "Issue the drawings, schedules and summaries",
   collaboration: "Saved versions, access roles and the team",
