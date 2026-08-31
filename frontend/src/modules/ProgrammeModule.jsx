@@ -8,6 +8,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldAlert,
+  Undo2,
   Users,
   Wallet,
   X,
@@ -203,17 +204,26 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
   const [open, setOpen] = useState({});          // phase name -> task rows expanded
   // Seeded from whatever was saved with the project, so a reload reopens the programme the
   // user left rather than the generated one underneath it.
-  const [cfg, setCfg] = useState({
-    ...(project?.schedule || {}),
-    start_date: (project?.schedule?.start_date) || new Date().toISOString().slice(0, 10),
-    target_finish: "",          // empty = plan as the quantities fall out
+  const [cfg, setCfg] = useState(() => ({
+    // Defaults FIRST, saved config on top. The other way round -- which is what this was --
+    // meant every remount overwrote the saved tasks and edits with empty defaults, so
+    // switching tabs silently threw away everything the user had just entered.
+    start_date: new Date().toISOString().slice(0, 10),
+    target_finish: "",
     mobilisation_days: 10,
     blockwork_lag_floors: 2,
     crews: {},
     extra_tasks: [],
     excluded_tasks: [],
     task_overrides: {},
-  });
+    ...(project?.schedule || {}),
+  }));
+
+  // Undo stack. Autosave means there is no Save button to hesitate over, so there has to
+  // be a way back -- seven steps, which covers a wrong drag or a mistyped date without
+  // turning into a document history.
+  const UNDO_LIMIT = 7;
+  const [undoStack, setUndoStack] = useState([]);
 
   // `next` lets an edit re-plan with the config it just produced rather than waiting a
   // render for setCfg to land.
@@ -244,10 +254,10 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
         ...c, ...saved,
         // Lists must never come back undefined: a project saved before one of these
         // existed would otherwise crash the first edit that touched it.
-        extra_tasks: saved.extra_tasks || [],
-        excluded_tasks: saved.excluded_tasks || [],
-        task_overrides: saved.task_overrides || {},
-        crews: saved.crews || {},
+        extra_tasks: saved.extra_tasks ?? c.extra_tasks ?? [],
+        excluded_tasks: saved.excluded_tasks ?? c.excluded_tasks ?? [],
+        task_overrides: saved.task_overrides ?? c.task_overrides ?? {},
+        crews: saved.crews ?? c.crews ?? {},
       }));
     }
     // eslint-disable-next-line
@@ -261,10 +271,24 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
     if (!readOnly) update?.((p) => { p.schedule = next; });
   };
 
-  const apply = (next) => {
+  const apply = (next, { track = true } = {}) => {
+    if (track) {
+      setUndoStack((st) => [...st, cfg].slice(-UNDO_LIMIT));
+    }
     setCfg(next);
     persist(next);
     run(next);
+  };
+
+  // Side effects stay out of the updater -- React may run an updater twice, and calling
+  // another component's setState from inside one drops writes.
+  const undo = () => {
+    if (!undoStack.length) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((st) => st.slice(0, -1));
+    setCfg(prev);
+    persist(prev);
+    run(prev);
   };
 
   // Config fields (dates, site setup, crew) used to call setCfg only, so they were saved
@@ -272,6 +296,7 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
   // so typing a date does not fire a request per keystroke.
   const set = (k, v) => {
     const next = { ...cfg, [k]: v };
+    setUndoStack((st) => [...st, cfg].slice(-UNDO_LIMIT));
     setCfg(next);
     persist(next);
   };
@@ -527,6 +552,14 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
         testid="prog-phase-table"
         actions={
           <div className="flex items-center gap-2">
+            {undoStack.length > 0 && (
+              <Button variant="outline" className="rounded-sm h-8" onClick={undo}
+                disabled={busy || readOnly} data-testid="prog-undo"
+                title={`Undo the last change (${undoStack.length} available)`}>
+                <Undo2 className="h-3.5 w-3.5 mr-1.5" />
+                Undo ({undoStack.length})
+              </Button>
+            )}
             {editCount > 0 && (
               <>
                 <span className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-sm px-1.5 py-0.5"
