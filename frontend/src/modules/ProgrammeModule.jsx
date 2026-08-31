@@ -445,6 +445,28 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
 
       <TargetBanner target={plan?.target} cost={costDelta} />
 
+      {plan?.budget && (
+        <div className="text-[11px] rounded-sm border border-slate-200 bg-slate-50 px-3 py-2"
+          data-testid="prog-budget">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span>
+              <span className="text-slate-500">Project cost </span>
+              <span className="font-mono font-semibold text-slate-900">
+                {money(plan.budget.project_total, "INR")}
+              </span>
+            </span>
+            <span className="text-slate-500">
+              BOQ {money(plan.budget.boq_total, "INR")}
+              {plan.budget.added_tasks > 0 && <> + added work {money(plan.budget.added_tasks, "INR")}</>}
+              {plan.budget.acceleration_premium > 0 && <> + overtime {money(plan.budget.acceleration_premium, "INR")}</>}
+              {plan.budget.lost_productivity > 0 && <> + lost output {money(plan.budget.lost_productivity, "INR")}</>}
+              {plan.budget.preliminaries > 0 && <> + site running {money(plan.budget.preliminaries, "INR")}</>}
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">{plan.budget.note}</p>
+        </div>
+      )}
+
       {plan?.safety && (
         <p className="text-[11px] text-slate-700 bg-slate-50 border border-slate-200 rounded-sm px-2 py-1.5 flex gap-2"
           data-testid="prog-safety">

@@ -1602,8 +1602,31 @@ def plan_schedule(project: Dict[str, Any], analysis: Dict[str, Any],
                      "extending adds time-related preliminaries. Both directions cost."),
         }
 
+        # ---- project budget ------------------------------------------------------------
+        # The headline cost was the BOQ total and nothing else, so it never moved when the
+        # programme changed: compressing the finish date, extending it, or adding a task
+        # all left it at the same figure. The BOQ prices the MATERIALS AND WORK; these are
+        # the costs that come from HOW and WHEN it is built, which the BOQ cannot know.
+        added_tasks_cost = sum(a.cost for a in acts if a.custom)
+        budget = {
+            "boq_total": round(boq_total, 2),
+            "acceleration_premium": round(premium_total, 2),
+            "lost_productivity": round(lost_productivity, 2),
+            "preliminaries": round(prelim_total, 2),
+            "added_tasks": round(added_tasks_cost, 2),
+            "programme_adjustment": round(
+                premium_total + lost_productivity + prelim_total + added_tasks_cost, 2),
+            "project_total": round(
+                boq_total + premium_total + lost_productivity + prelim_total
+                + added_tasks_cost, 2),
+            "note": ("The BOQ prices the work. These add what the programme costs: overtime "
+                     "and lost output when it is compressed, site running cost over its "
+                     "length, and any task added by hand."),
+        }
+
         return {
             "ok": True,
+            "budget": budget,
             "config": cfg.to_dict(),
             "start": start.isoformat(),
             "finish": finish.isoformat(),

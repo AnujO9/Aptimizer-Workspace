@@ -137,7 +137,9 @@ export default function Workspace() {
     if (!project) return;
     let cancelled = false;
     const t = setTimeout(() => {
-      api.post("/schedule", { project, summary: true, config: {} })
+      // The project's own schedule config, so the headline cost reflects the programme the
+      // user actually set -- target date, added tasks and all -- not a default one.
+      api.post("/schedule", { project, summary: true, config: project.schedule || {} })
         .then(({ data }) => { if (!cancelled) setDuration(data.ok ? data : null); })
         .catch(() => { if (!cancelled) setDuration(null); });
     }, 600);   // debounce: the project mutates on every keystroke while editing

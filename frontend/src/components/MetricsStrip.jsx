@@ -54,7 +54,25 @@ export const MetricsStrip = ({ analysis, duration, vertical = false }) => {
       <Item vertical={vertical} label="Open Space" value={num(a.open_space_pct, 1)} unit="%" testid="metric-open-space" />
       <Item vertical={vertical} label="Units" value={int(a.total_units)} testid="metric-units" />
       <Item vertical={vertical} label="Density" value={num(a.density_units_per_acre, 1)} unit="/acre" testid="metric-density" />
-      <Item vertical={vertical} label="Cost" value={money(analysis.cost.total, analysis.cost.currency)} testid="metric-cost" />
+      {/* The BOQ prices the work; the programme adds what it costs to build it that way --
+          overtime and lost output when compressed, site running cost over its length, and
+          any task added by hand. Showing the BOQ alone meant this number never moved when
+          the finish date did. */}
+      <Item
+        vertical={vertical}
+        label="Cost"
+        value={money(duration?.budget?.project_total ?? analysis.cost.total, analysis.cost.currency)}
+        tone={duration?.budget?.programme_adjustment > 0 ? "danger" : undefined}
+        testid="metric-cost"
+      />
+      {duration?.budget?.programme_adjustment > 0 && (
+        <Item
+          vertical={vertical}
+          label="of which programme"
+          value={money(duration.budget.programme_adjustment, analysis.cost.currency)}
+          testid="metric-programme-cost"
+        />
+      )}
       <Item
         vertical={vertical}
         label="Build Time"
