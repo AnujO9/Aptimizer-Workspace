@@ -25,7 +25,7 @@ def text_of(pdf: bytes) -> str:
 
 
 def test_there_are_exactly_eleven_reports():
-    assert len(R.REPORT_TITLES) == 11
+    assert len(R.REPORT_TITLES) == 12
     assert set(R.ALL_ORDER) == set(R.REPORT_TITLES)
 
 
@@ -94,7 +94,27 @@ def test_cost_report_carries_the_optimisation_findings(ctx):
     assert "Optimisation Findings" in t
     assert "Change required" in t
     assert "Waste reduction" in t
-    assert len(R.REPORT_TITLES) == 11
+    assert len(R.REPORT_TITLES) == 12
+
+
+def test_setbacks_appear_in_a_report_of_their_own(ctx):
+    """Burying them inside Compliance meant a reader looking for setbacks had nothing to
+    click, which is the same as not having them."""
+    p, a, eng = ctx
+    t = text_of(R.build_pdf("plot", p, a, eng))
+    assert "Plot Geometry" in t
+    assert "Setbacks & Development Controls" in t
+    assert "Minimum (m)" in t and "NBC 2016 Part 3" in t
+
+
+def test_setbacks_also_stay_in_the_compliance_report(ctx):
+    p, a, eng = ctx
+    assert "Setbacks & Development Controls" in text_of(R.build_pdf("compliance", p, a, eng))
+
+
+def test_a_failing_setback_says_it_is_not_sanctionable(ctx):
+    p, a, eng = ctx
+    assert "Not sanctionable" in text_of(R.build_pdf("plot", p, a, eng))
 
 
 def test_sustainability_report_carries_m13_and_m14(ctx):

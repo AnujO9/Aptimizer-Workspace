@@ -26,6 +26,7 @@ LIGHT = colors.HexColor("#F1F5F9")
 REPORT_TITLES = {
     "executive": "Executive Summary",
     "site": "Site Analysis Report",
+    "plot": "Plot & Setbacks Report",
     "compliance": "Compliance Validation Report",
     "engineering": "IS / NBC Engineering Summary",
     "structural": "Structural Design Basis Report",
@@ -48,8 +49,8 @@ MERGED_INTO = {
 }
 
 # The order a merged PDF reads in: site, then design, then verification, then commercial.
-ALL_ORDER = ["executive", "site", "compliance", "engineering", "structural", "water",
-             "fire", "sustainability", "boq", "cost", "programme"]
+ALL_ORDER = ["executive", "site", "plot", "compliance", "engineering", "structural",
+             "water", "fire", "sustainability", "boq", "cost", "programme"]
 
 
 def _styles():
@@ -403,8 +404,31 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                       [["Equipment Total", "", "", "", _n(boq["equipment_total"])]],
                       col_widths=[60 * mm, 20 * mm, 26 * mm, 28 * mm, 33 * mm])]
 
+    if report_type == "plot":
+        plot = project.get("plot") or {}
+        edges = plot.get("road_edges") or []
+        el += [Paragraph("Plot Geometry", ss["Sec"]), _kv([
+            ("Plot area (m²)", _n(areas["plot_area_sqm"])),
+            ("Plot area (acres)", _n(areas["plot_area_acres"])),
+            ("Boundary vertices", len(plot.get("coordinates") or [])),
+            ("Recorded length x width (m)", f'{_n(plot.get("length"))} x {_n(plot.get("width"))}'),
+            ("Orientation (deg)", _n(plot.get("orientation_deg") or 0)),
+            ("Ground footprint (m²)", _n(areas["ground_footprint_sqm"])),
+            ("Ground coverage (%)", _n(areas["ground_coverage_pct"])),
+            ("Open space (m²)", _n(areas["open_space_sqm"])),
+            ("Open space (%)", _n(areas["open_space_pct"])),
+        ])]
+        if edges:
+            el += [Paragraph("Road-Facing Edges", ss["Sec"]),
+                   _table([["Edge", "Width (m)"]]
+                          + [[f'Edge {e.get("edge_index")}', _n(e.get("width"))] for e in edges],
+                          col_widths=[60 * mm, 40 * mm])]
+        else:
+            el += [Paragraph("No road-facing edges are marked, so the front setback cannot "
+                             "be assigned to a specific boundary.", ss["Sub"])]
+
     # ---------------------------------------------------------------- setbacks
-    if report_type == "compliance":
+    if report_type in ("compliance", "plot"):
         try:
             import siteplan as _sp
             applied = ((project.get("dev_controls") or {}).get("setbacks")
@@ -433,8 +457,9 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                 el += [Paragraph(f"<b>Not sanctionable as drawn:</b> {short}.", ss["Sub"])]
             if chk.get("note"):
                 el += [Paragraph(chk["note"], ss["Sub"])]
-        except Exception:
-            pass
+        except Exception as exc:
+            el += [Paragraph("Setbacks & Development Controls", ss["Sec"]),
+                   Paragraph(f"Could not be evaluated: {exc}", ss["Sub"])]
 
     if report_type == "boq":
         el += [Paragraph("Estimated Quantities", ss["Sec"]),

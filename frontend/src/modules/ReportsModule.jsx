@@ -15,8 +15,9 @@ import { int, money, num } from "../lib/format";
 // heading, because an unexplained gap reads as something missing.
 const REPORT_GROUPS = [
   ["site", "Site", [
+    ["plot", "Plot & Setbacks", "Boundary, area, road edges and setbacks against their limits"],
     ["site", "Site Analysis", "Terrain, flood risk, access, sun path, suitability and solar potential"],
-  ], "Plot geometry and setbacks are checked in the Compliance report."],
+  ], ""],
 
   ["design", "Design", [],
    "Apartment planning and parking are in the Executive Summary — neither filled a report on its own."],
@@ -78,7 +79,7 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[11px] text-slate-500 max-w-xl">
-          Eleven reports, grouped as in the menu.
+          Twelve reports, grouped as in the menu.
         </p>
         <Button
           className="rounded-sm"
