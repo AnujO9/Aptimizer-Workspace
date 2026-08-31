@@ -1,0 +1,9 @@
+# Automatic HTTPS. Caddy obtains and renews the certificate on its own; the only
+# requirement is that DOMAIN resolves to this server and ports 80/443 are open.
+{$DOMAIN} {
+    encode gzip
+    reverse_proxy frontend:80 {
+        flush_interval -1   # stream APT's chat responses rather than buffering
+    }
+    tls {$LETSENCRYPT_EMAIL}
+}

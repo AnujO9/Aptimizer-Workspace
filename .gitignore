@@ -108,3 +108,6 @@ frontend_dev.log
 # these accumulate beside real sources and must never be committed.
 ._*
 .!*!*
+
+# Keep the documented template; real secrets stay ignored above.
+!.env.example

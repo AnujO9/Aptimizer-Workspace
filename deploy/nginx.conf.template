@@ -1,0 +1,41 @@
+server {
+    listen ${PORT};
+    server_name _;
+
+    root /var/www/aptimizer;
+    index index.html;
+    client_max_body_size 25m;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript
+               application/xml image/svg+xml;
+    gzip_min_length 1024;
+
+    # Hashed CRA assets are immutable. index.html must never be cached, or people
+    # keep loading yesterday's bundle after a deploy.
+    location /static/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    location = /index.html {
+        add_header Cache-Control "no-store";
+    }
+
+    # The API runs in this same container. proxy_buffering off keeps APT's streamed
+    # replies arriving token by token instead of in one lump at the end.
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

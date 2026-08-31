@@ -1,0 +1,29 @@
+# Render Blueprint. Push this to GitHub, then in Render: New > Blueprint > pick the
+# repo. Everything below is created automatically; you supply four secrets.
+services:
+  - type: web
+    name: aptimizer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # "free" also works, but sleeps after 15 min idle
+    healthCheckPath: /api/
+    envVars:
+      # Paste the MongoDB Atlas connection string here in the Render dashboard.
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: aptimizer
+      # Render generates a strong secret and keeps it. Never set this by hand.
+      - key: JWT_SECRET
+        generateValue: true
+      # The first admin account, created on first boot.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # At least one AI key, or APT and the AI reports disable themselves.
+      - key: GEMINI_API_KEY
+        sync: false
+      # Same origin, so CORS never comes into play. Left for completeness.
+      - key: FRONTEND_URL
+        value: http://localhost
