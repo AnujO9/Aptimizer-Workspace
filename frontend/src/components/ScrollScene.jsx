@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Blueprint from "./Blueprint";
 import { useReducedMotion } from "framer-motion";
 
 /**
@@ -33,7 +34,6 @@ export function ScrollScene({
   frameCount = 60,
   frames = null,                // explicit frame numbers, in order; overrides frameCount
   src = defaultSrc,
-  poster = "/frames/poster.jpg",
   className = "",
   leadIn = 0,                   // fraction of the scroll held on blank paper first
 }) {
@@ -151,22 +151,14 @@ export function ScrollScene({
   }, [target, indices, leadIn, reduced, ready]);
 
   if (reduced) {
-    return (
-      <img src={poster} alt="" aria-hidden="true"
-        className={`absolute inset-0 h-full w-full object-cover ${className}`} />
-    );
+    return <Blueprint className={className} />;
   }
 
   return (
     <>
-      <img
-        src={poster}
-        alt=""
-        aria-hidden="true"
-        className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${
-          ready || leadIn > 0 ? "opacity-0" : "opacity-100"
-        } ${className}`}
-      />
+      {/* Always underneath: it is what the hero shows before the first frame is drawn, and
+          what shows through anywhere a frame has not loaded. */}
+      <Blueprint className={className} />
       <canvas ref={canvasRef} aria-hidden="true"
         className={`absolute inset-0 h-full w-full ${className}`} />
     </>
