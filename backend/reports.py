@@ -403,6 +403,39 @@ def build_pdf(report_type: str, project: dict, a: dict, eng: dict = None) -> byt
                       [["Equipment Total", "", "", "", _n(boq["equipment_total"])]],
                       col_widths=[60 * mm, 20 * mm, 26 * mm, 28 * mm, 33 * mm])]
 
+    # ---------------------------------------------------------------- setbacks
+    if report_type == "compliance":
+        try:
+            import siteplan as _sp
+            applied = ((project.get("dev_controls") or {}).get("setbacks")
+                       or {"default": 6.0, "front": 9.0, "rear": 4.5, "side": 4.5})
+            plot = project.get("plot") or {}
+            road = max([float(e.get("width") or 0)
+                        for e in (plot.get("road_edges") or [])] or [0.0])
+            chk = _sp.validate_setbacks(
+                applied, plot_area=float(areas["plot_area_sqm"] or 0),
+                road_width=road, height_m=float(areas["max_height_m"] or 0))
+            rows = [[r["edge"].title(), _n(r["applied_m"]), _n(r["minimum_m"]),
+                     "PASS" if r["ok"] else "FAIL",
+                     _n(r["shortfall_m"]) if r["shortfall_m"] else "-"]
+                    for r in chk["edges"]]
+            el += [Paragraph("Setbacks & Development Controls", ss["Sec"]),
+                   _table([["Edge", "Applied (m)", "Minimum (m)", "Status", "Short by (m)"]]
+                          + rows,
+                          col_widths=[32 * mm, 28 * mm, 28 * mm, 24 * mm, 30 * mm]),
+                   Paragraph(f"Minimums are set by {chk['edges'][0]['clause']}. Side and rear "
+                             f"open space scales with building height, which is "
+                             f"{_n(areas['max_height_m'])} m here; the front setback is the "
+                             "larger of the plot-size and height requirements.", ss["Sub"])]
+            if not chk["ok"]:
+                short = ", ".join(f'{r["edge"]} by {r["shortfall_m"]} m'
+                                  for r in chk["edges"] if not r["ok"])
+                el += [Paragraph(f"<b>Not sanctionable as drawn:</b> {short}.", ss["Sub"])]
+            if chk.get("note"):
+                el += [Paragraph(chk["note"], ss["Sub"])]
+        except Exception:
+            pass
+
     if report_type == "boq":
         el += [Paragraph("Estimated Quantities", ss["Sec"]),
                _table([["Material", "Unit", "Ratio", "Basis", "Quantity"]] +

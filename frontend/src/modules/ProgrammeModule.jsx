@@ -239,7 +239,17 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
   // shows what the user left, not a fresh default.
   useEffect(() => {
     const saved = project?.schedule;
-    if (saved && Object.keys(saved).length) setCfg((c) => ({ ...c, ...saved }));
+    if (saved && Object.keys(saved).length) {
+      setCfg((c) => ({
+        ...c, ...saved,
+        // Lists must never come back undefined: a project saved before one of these
+        // existed would otherwise crash the first edit that touched it.
+        extra_tasks: saved.extra_tasks || [],
+        excluded_tasks: saved.excluded_tasks || [],
+        task_overrides: saved.task_overrides || {},
+        crews: saved.crews || {},
+      }));
+    }
     // eslint-disable-next-line
   }, [projectId]);
 
@@ -260,11 +270,11 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
   // Config fields (dates, site setup, crew) used to call setCfg only, so they were saved
   // by nothing at all. They persist now; the re-plan still waits for the Re-plan button
   // so typing a date does not fire a request per keystroke.
-  const set = (k, v) => setCfg((c) => {
-    const next = { ...c, [k]: v };
+  const set = (k, v) => {
+    const next = { ...cfg, [k]: v };
+    setCfg(next);
     persist(next);
-    return next;
-  });
+  };
 
   // One override object per task. Merging rather than replacing means editing the crew
   // does not silently discard a pinned date the user set earlier.
@@ -309,11 +319,12 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
     apply({ ...cfg, task_overrides: next });
   };
 
-  const addTask = (t) => apply({ ...cfg, extra_tasks: [...cfg.extra_tasks, t] });
+  const addTask = (t) =>
+    apply({ ...cfg, extra_tasks: [...(cfg.extra_tasks || []), t] });
   const removeTask = (id) =>
     apply(id.startsWith("custom_")
-      ? { ...cfg, extra_tasks: cfg.extra_tasks.filter((_, i) => `custom_${i}` !== id) }
-      : { ...cfg, excluded_tasks: [...cfg.excluded_tasks, id] });
+      ? { ...cfg, extra_tasks: (cfg.extra_tasks || []).filter((_, i) => `custom_${i}` !== id) }
+      : { ...cfg, excluded_tasks: [...(cfg.excluded_tasks || []), id] });
   const restoreAll = () => apply({ ...cfg, excluded_tasks: [] });
 
   // One shared time axis so every phase bar is comparable.
@@ -529,11 +540,11 @@ export default function ProgrammeModule({ project, projectId, readOnly, setProje
                 </Button>
               </>
             )}
-            {cfg.excluded_tasks.length > 0 && (
+            {(cfg.excluded_tasks || []).length > 0 && (
               <Button variant="outline" className="rounded-sm h-8" onClick={restoreAll}
                 disabled={busy || readOnly} data-testid="prog-restore-tasks">
                 <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
-                Restore {plural(cfg.excluded_tasks.length, "removed task")}
+                Restore {plural((cfg.excluded_tasks || []).length, "removed task")}
               </Button>
             )}
           </div>
