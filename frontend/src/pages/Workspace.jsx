@@ -85,7 +85,7 @@ export default function Workspace() {
   const [active, setActive] = useState("plot");
   const [saveState, setSaveState] = useState("saved");
   const [duration, setDuration] = useState(null);
-  const dirty = useRef(false);
+  const dirty = useRef(0);   // edit generation, not a boolean -- see saveNow
 
   useEffect(() => {
     api
@@ -109,26 +109,83 @@ export default function Workspace() {
     return () => clearTimeout(t);
   }, [project]);
 
-  // debounced autosave
+  // Autosave.
+  //
+  // Three things it has to get right, and the original got none of them:
+  //
+  //  1. A FAILED SAVE MUST RETRY. It used to toast an error and stop. The next attempt
+  //     only came if the user happened to edit again, so a save that failed while they
+  //     were finishing up lost the work silently.
+  //  2. AN EDIT DURING A SAVE MUST NOT BE MARKED CLEAN. The flag was cleared after the
+  //     request returned, so anything typed while it was in flight was recorded as
+  //     already saved and then never sent.
+  //  3. LEAVING THE PAGE MUST FLUSH. There is a debounce window where recent edits exist
+  //     only in memory; closing the tab inside it threw them away.
+  const saveTimer = useRef(null);
+  const retries = useRef(0);
+  const latest = useRef(project);
+  latest.current = project;
+
+  const saveNow = useCallback(async () => {
+    const snapshot = latest.current;
+    if (!snapshot || !dirty.current) return;
+    // Claim the current edit generation. Anything the user types after this line bumps it
+    // again, so the save cannot mark those edits clean.
+    const generation = dirty.current;
+    setSaveState("saving");
+    const updates = {};
+    EDITABLE.forEach((k) => {
+      if (snapshot[k] !== undefined) updates[k] = snapshot[k];
+    });
+    try {
+      await api.put(`/projects/${projectId}`, { updates });
+      retries.current = 0;
+      if (dirty.current === generation) {
+        dirty.current = false;
+        setSaveState("saved");
+      } else {
+        setSaveState("saving");        // more arrived while this was in flight
+      }
+    } catch (e) {
+      setSaveState("error");
+      // Back off and keep trying rather than dropping the work on the floor.
+      const wait = Math.min(2000 * 2 ** retries.current, 30000);
+      retries.current += 1;
+      if (retries.current === 1) toast.error(apiError(e.response?.data?.detail));
+      saveTimer.current = setTimeout(saveNow, wait);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     if (!project || !dirty.current) return;
     setSaveState("saving");
-    const t = setTimeout(async () => {
-      const updates = {};
-      EDITABLE.forEach((k) => {
-        if (project[k] !== undefined) updates[k] = project[k];
-      });
-      try {
-        await api.put(`/projects/${projectId}`, { updates });
-        dirty.current = false;
-        setSaveState("saved");
-      } catch (e) {
-        setSaveState("error");
-        toast.error(apiError(e.response?.data?.detail));
-      }
-    }, 900);
-    return () => clearTimeout(t);
-  }, [project, projectId]);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(saveNow, 900);
+    return () => clearTimeout(saveTimer.current);
+  }, [project, saveNow]);
+
+  // Flush on the way out: closing the tab, switching away, or navigating.
+  useEffect(() => {
+    const flush = () => {
+      if (!dirty.current) return;
+      clearTimeout(saveTimer.current);
+      saveNow();
+    };
+    const onHide = () => { if (document.visibilityState === "hidden") flush(); };
+    const onBeforeUnload = (e) => {
+      if (!dirty.current) return;
+      flush();
+      e.preventDefault();
+      e.returnValue = "";        // prompts only while a save is genuinely outstanding
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      flush();
+    };
+  }, [saveNow]);
 
   // Headline build duration for the metrics strip. Uses the summary form of the
   // programme endpoint, which skips float verification and the 120-activity payload --
@@ -147,7 +204,9 @@ export default function Workspace() {
   }, [project]);
 
   const update = useCallback((mutator) => {
-    dirty.current = true;
+    // A counter, not a boolean: the save compares the value it started with against the
+    // value at the end, which is how an edit made mid-request stays dirty.
+    dirty.current = (dirty.current || 0) + 1;
     setProject((prev) => {
       const copy = structuredClone(prev);
       mutator(copy);
@@ -203,8 +262,11 @@ export default function Workspace() {
                 : "bg-red-50 text-red-700"
             }`}
             data-testid="save-indicator"
+            title={saveState === "error"
+              ? "Could not save. Retrying automatically — your work is not lost."
+              : saveState === "saving" ? "Saving…" : "All changes saved"}
           >
-            {saveState}
+            {saveState === "error" ? "retrying" : saveState}
           </span>
           <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded-sm bg-slate-100" data-testid="access-role-badge">
             {accessRole}
