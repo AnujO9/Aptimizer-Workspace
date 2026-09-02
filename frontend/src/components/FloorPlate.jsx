@@ -8,11 +8,18 @@ const COLORS = {
   kitchen: "#FFFBEB",
   bathroom: "#F0FDF4",
   balcony: "#F8FAFC",
+  terrace: "#F8FAFC",
   utility: "#FEF3C7",
   common: "#F1F5F9",
   closet: "#FDF2F8",
   entrance: "#FAF5FF",
+  foyer: "#FAF5FF",
   study: "#EEF2FF",
+  office: "#EEF2FF",
+  pooja: "#FEF9C3",
+  servant: "#F8FAFC",
+  shaft: "#E2E8F0",
+  pantry: "#FFFBEB",
 };
 
 export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
@@ -200,15 +207,34 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
               <pattern id="balcony-rail" width="6" height="6" patternUnits="userSpaceOnUse">
                 <line x1="0" y1="6" x2="6" y2="0" stroke="#CBD5E1" strokeWidth="1" />
               </pattern>
+              <pattern id="shaft-hatch" width="8" height="8" patternUnits="userSpaceOnUse">
+                <path d="M 0 0 L 8 8 M 8 0 L 0 8" stroke="#94A3B8" strokeWidth="1" />
+              </pattern>
+              <pattern id="terrace-deck" width="12" height="12" patternUnits="userSpaceOnUse">
+                <rect width="12" height="12" fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="0.5" />
+                <line x1="0" y1="0" x2="12" y2="12" stroke="#CBD5E1" strokeWidth="0.75" />
+              </pattern>
             </defs>
 
             <rect width="100%" height="100%" fill="url(#arch-grid)" />
 
-            {/* North Indicator */}
-            <g transform="translate(35, 35)">
-              <circle cx="0" cy="0" r="16" fill="#F8FAFC" stroke="#94A3B8" strokeWidth="1" />
-              <path d="M 0 -12 L 5 8 L 0 4 L -5 8 Z" fill="#2563EB" />
-              <text x="0" y="-14" textAnchor="middle" fontSize="9" fontWeight="bold" fill="#1E293B" fontFamily="sans-serif">N</text>
+            {/* Vastu & Cardinal Compass */}
+            <g transform="translate(42, 42)">
+              <circle cx="0" cy="0" r="24" fill="#FFFFFF" stroke="#CBD5E1" strokeWidth="1.5" />
+              <circle cx="0" cy="0" r="20" fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="1" strokeDasharray="2 2" />
+              {/* Needle */}
+              <path d="M 0 -17 L 4 5 L 0 2 L -4 5 Z" fill="#2563EB" />
+              <path d="M 0 17 L 4 5 L 0 2 L -4 5 Z" fill="#94A3B8" />
+              {/* Cardinal Labels */}
+              <text x="0" y="-19" textAnchor="middle" fontSize="8" fontWeight="bold" fill="#1E40AF" fontFamily="JetBrains Mono">N</text>
+              <text x="0" y="26" textAnchor="middle" fontSize="7" fontWeight="bold" fill="#64748B" fontFamily="JetBrains Mono">S</text>
+              <text x="23" y="2.5" textAnchor="start" fontSize="7" fontWeight="bold" fill="#64748B" fontFamily="JetBrains Mono">E</text>
+              <text x="-23" y="2.5" textAnchor="end" fontSize="7" fontWeight="bold" fill="#64748B" fontFamily="JetBrains Mono">W</text>
+              {/* Vastu Quadrant Identifiers */}
+              <text x="13" y="-9" textAnchor="middle" fontSize="6" fontWeight="bold" fill="#D97706" fontFamily="sans-serif">NE</text>
+              <text x="13" y="14" textAnchor="middle" fontSize="6" fontWeight="bold" fill="#EA580C" fontFamily="sans-serif">SE</text>
+              <text x="-13" y="14" textAnchor="middle" fontSize="6" fontWeight="bold" fill="#2563EB" fontFamily="sans-serif">SW</text>
+              <text x="-13" y="-9" textAnchor="middle" fontSize="6" fontWeight="bold" fill="#059669" fontFamily="sans-serif">NW</text>
             </g>
 
             {corridor > 0 && (
@@ -273,6 +299,9 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
               const areaSqm = wVal * hVal;
               const areaSqft = areaSqm * 10.7639;
               const isBalcony = r.type === "balcony";
+              const isTerrace = r.type === "terrace";
+              const isShaft = r.type === "shaft";
+              const isPooja = r.type === "pooja";
               const hasWindow = r.has_window || r.type === "living" || r.type === "bedroom";
 
               return (
@@ -292,9 +321,10 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
                     y={ry}
                     width={rw}
                     height={rh}
-                    fill={COLORS[r.type] || "#FFFFFF"}
-                    stroke={active ? "#2563EB" : "#1E293B"}
-                    strokeWidth={active ? 2.5 : 1.5}
+                    fill={isShaft ? "url(#shaft-hatch)" : isTerrace ? "url(#terrace-deck)" : (COLORS[r.type] || "#FFFFFF")}
+                    stroke={active ? "#2563EB" : isPooja ? "#D97706" : isShaft ? "#64748B" : "#1E293B"}
+                    strokeWidth={active ? 2.5 : isPooja ? 2.0 : 1.5}
+                    strokeDasharray={isShaft ? "4 2" : undefined}
                   />
 
                   {isBalcony && (
@@ -302,29 +332,44 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
                   )}
 
                   {/* Exterior window band if applicable */}
-                  {hasWindow && !isBalcony && (
+                  {hasWindow && !isBalcony && !isTerrace && (
                     <line
-                      x1={rx + 10}
+                      x1={rx + 8}
                       y1={ry + 1}
-                      x2={rx + Math.max(rw - 10, 15)}
+                      x2={rx + Math.max(rw - 8, 15)}
                       y2={ry + 1}
                       stroke="#38BDF8"
                       strokeWidth="3.5"
                     />
                   )}
 
-                  {/* Door swing arc in the corner */}
-                  {!isBalcony && rw > 40 && rh > 40 && (
-                    <g opacity="0.6">
+                  {/* Door swing arc with clearance offset (100-150mm architrave clearance) */}
+                  {!isBalcony && !isTerrace && !isShaft && rw > 40 && rh > 40 && (
+                    <g opacity="0.65">
                       <path
-                        d={`M ${rx + 1} ${ry + rh - 18} A 16 16 0 0 1 ${rx + 18} ${ry + rh - 1}`}
+                        d={`M ${rx + 5} ${ry + rh - 18} A 16 16 0 0 1 ${rx + 21} ${ry + rh - 2}`}
                         fill="none"
                         stroke="#64748B"
                         strokeWidth="1"
                         strokeDasharray="2 2"
                       />
-                      <line x1={rx + 1} y1={ry + rh - 18} x2={rx + 1} y2={ry + rh - 1} stroke="#1E293B" strokeWidth="1.5" />
+                      <line x1={rx + 5} y1={ry + rh - 18} x2={rx + 5} y2={ry + rh - 2} stroke="#1E293B" strokeWidth="1.5" />
                     </g>
+                  )}
+
+                  {/* Vastu Sector Badge */}
+                  {r.vastu && rw > 45 && (
+                    <text
+                      x={rx + rw - 6}
+                      y={ry + 14}
+                      textAnchor="end"
+                      fontFamily="JetBrains Mono, monospace"
+                      fontSize="8"
+                      fontWeight="bold"
+                      fill={isPooja ? "#B45309" : "#2563EB"}
+                    >
+                      {r.vastu.split(" ")[0]}
+                    </text>
                   )}
 
                   {/* Room name */}
@@ -334,26 +379,28 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
                     fontFamily="sans-serif"
                     fontSize="10"
                     fontWeight="600"
-                    fill={active ? "#1D4ED8" : "#0F172A"}
+                    fill={active ? "#1D4ED8" : isPooja ? "#92400E" : "#0F172A"}
                   >
-                    {r.name}
+                    {isPooja ? `🕉 ${r.name}` : r.name}
                   </text>
 
                   {/* Dual metric area label: m² and sq.ft */}
-                  <text
-                    x={rx + 8}
-                    y={ry + 30}
-                    fontSize="9"
-                    fontFamily="JetBrains Mono, monospace"
-                    fill="#475569"
-                  >
-                    {areaSqm.toFixed(1)} m² <tspan fill="#94A3B8">({areaSqft.toFixed(0)} sqft)</tspan>
-                  </text>
+                  {!isShaft && (
+                    <text
+                      x={rx + 8}
+                      y={ry + 30}
+                      fontSize="9"
+                      fontFamily="JetBrains Mono, monospace"
+                      fill="#475569"
+                    >
+                      {areaSqm.toFixed(1)} m² <tspan fill="#94A3B8">({areaSqft.toFixed(0)} sqft)</tspan>
+                    </text>
+                  )}
 
                   {/* Dimensions */}
                   <text
                     x={rx + 8}
-                    y={ry + 42}
+                    y={ry + (isShaft ? 30 : 42)}
                     fontSize="8"
                     fontFamily="JetBrains Mono, monospace"
                     fill="#94A3B8"

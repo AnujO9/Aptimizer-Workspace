@@ -193,10 +193,25 @@ def test_the_fixed_replies_carry_no_citations():
 
 def test_chat_route_verifies_citations_on_every_generated_answer():
     """No tier may skip the guard. Pinned by reading the route, because the alternative
-    is discovering it was skipped from a wrong clause number in production."""
+    is discovering it was skipped from a wrong clause number in production.
+
+    Read line by line rather than by splitting the source on the substring "return": the
+    earlier version did that, so rewording a nearby comment to drop the word "returned"
+    moved the split point and quietly changed what was being checked. A guard test that can
+    be switched off by editing prose is not a guard.
+    """
     import inspect, server
-    src = inspect.getsource(server.ai_chat)
-    assert src.count("citelib.verify(") == 1
-    # The one early return that skips it is the path that never calls a model at all.
-    before = src.split("citelib.verify(")[0]
-    assert "generate_markdown" not in before.split("return")[-1]
+    lines = inspect.getsource(server.ai_chat).splitlines()
+    model = [i for i, ln in enumerate(lines) if "generate_markdown" in ln]
+    # verify_with_extracts wraps verify(), so either spelling is the guard.
+    guard = [i for i, ln in enumerate(lines) if "citelib.verify" in ln]
+
+    assert len(model) == 1, f"expected one model call on this route, found {len(model)}"
+    assert len(guard) == 1, f"expected one citation guard on this route, found {len(guard)}"
+    assert guard[0] > model[0], "the guard must check the model's answer, not precede it"
+    # Nothing may return between generating an answer and checking its citations. The one
+    # early return that skips the guard is above the model call, on the path that never
+    # asks a model at all.
+    between = [ln.strip() for ln in lines[model[0]:guard[0]]]
+    assert not any(ln == "return" or ln.startswith("return ") for ln in between), \
+        "a return between the model call and the citation guard would ship an unchecked answer"

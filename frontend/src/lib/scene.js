@@ -129,25 +129,214 @@ const rectFromRing = (ring) => {
   };
 };
 
-/** Reserved roads and amenity blocks in scene coordinates, for the 3D site view. */
-export const engineSiteShapes = (siteLayout) => {
-  const amenities = (siteLayout?.amenities || [])
-    .map((a) => {
-      const ring = toSceneRings(a.polygons_local)[0] || [];
-      if (ring.length < 4) return null;
-      return { key: a.key, name: a.name, height: a.height_m, floors: a.floors,
-               area: a.area_sqm, ...rectFromRing(ring) };
-    })
-    .filter(Boolean);
-
-  return {
-    amenities,
-    ring: toSceneRings(siteLayout?.roads?.ring_polygons_local),
-    driveways: toSceneRings(siteLayout?.roads?.driveway_polygons_local),
-    bays: toSceneRings(siteLayout?.surface_parking?.polygons_local),
-    green: toSceneRings(siteLayout?.green?.polygons_local),
-  };
+export const generateOval = (cx, cz, rx, rz, steps = 24) => {
+  const pts = [];
+  for (let i = 0; i < steps; i += 1) {
+    const angle = (i / steps) * Math.PI * 2;
+    pts.push([cx + Math.cos(angle) * rx, cz + Math.sin(angle) * rz]);
+  }
+  return pts;
 };
+
+export const generateCanonicalSiteShapes = (pts, bounds) => {
+  const cx = bounds.cx;
+  const cz = bounds.cz;
+  const w = bounds.width;
+  const d = bounds.depth;
+
+  // 1. Straight Internal Spine Road (7m width) connecting north to south
+  const rw = 3.5;
+  const driveways = [
+    [
+      [cx - rw, bounds.minZ + 6],
+      [cx + rw, bounds.minZ + 6],
+      [cx + rw, bounds.maxZ - 6],
+      [cx - rw, bounds.maxZ - 6],
+    ],
+  ];
+
+  // 2. Peripheral Setback Ring Road (6m wide corridor along boundary)
+  const insetX = Math.min(w * 0.08, 6.0);
+  const insetZ = Math.min(d * 0.08, 6.0);
+  const ring = [
+    [
+      [bounds.minX + insetX, bounds.minZ + insetZ],
+      [bounds.maxX - insetX, bounds.minZ + insetZ],
+      [bounds.maxX - insetX, bounds.minZ + insetZ + 5.5],
+      [bounds.minX + insetX, bounds.minZ + insetZ + 5.5],
+    ],
+    [
+      [bounds.minX + insetX, bounds.maxZ - insetZ - 5.5],
+      [bounds.maxX - insetX, bounds.maxZ - insetZ - 5.5],
+      [bounds.maxX - insetX, bounds.maxZ - insetZ],
+      [bounds.minX + insetX, bounds.maxZ - insetZ],
+    ],
+    [
+      [bounds.minX + insetX, bounds.minZ + insetZ],
+      [bounds.minX + insetX + 5.5, bounds.minZ + insetZ],
+      [bounds.minX + insetX + 5.5, bounds.maxZ - insetZ],
+      [bounds.minX + insetX, bounds.maxZ - insetZ],
+    ],
+    [
+      [bounds.maxX - insetX - 5.5, bounds.minZ + insetZ],
+      [bounds.maxX - insetX, bounds.minZ + insetZ],
+      [bounds.maxX - insetX, bounds.maxZ - insetZ],
+      [bounds.maxX - insetX - 5.5, bounds.maxZ - insetZ],
+    ],
+  ];
+
+  // 3. Central Oval Park (golf-course rich green)
+  const parkRx = Math.min(w * 0.16, 22.0);
+  const parkRz = Math.min(d * 0.12, 16.0);
+  const green = [generateOval(cx, cz + Math.min(d * 0.15, 18), parkRx, parkRz)];
+
+  // 4. Integrated Community Clubhouse (consolidated 3-storey block with rooftop pool)
+  const clubhouseX = cx + Math.min(w * 0.22, 28.0);
+  const clubhouseZ = cz + Math.min(d * 0.15, 18);
+  const amenities = [
+    {
+      key: "clubhouse",
+      name: "Integrated Community Clubhouse",
+      height: 10.5,
+      floors: 3,
+      area: 384,
+      x: clubhouseX,
+      z: clubhouseZ,
+      w: 24,
+      d: 16,
+      rotationY: 0,
+    },
+  ];
+
+  // 5. Surface parking bays along the spine road
+  const bays = [
+    [
+      [cx - rw - 5.0, cz - 10],
+      [cx - rw, cz - 10],
+      [cx - rw, cz + 5],
+      [cx - rw - 5.0, cz + 5],
+    ],
+    [
+      [cx + rw, cz - 10],
+      [cx + rw + 5.0, cz - 10],
+      [cx + rw + 5.0, cz + 5],
+      [cx + rw, cz + 5],
+    ],
+  ];
+
+  return { ring, driveways, green, amenities, bays };
+};
+
+/** Arranges towers along the spine road with optimal sunlight & open space */
+export const spineTowerLayout = (projectTowers = [], poly = [], bounds = null) => {
+  if (!projectTowers.length) return [];
+  const b = bounds || localBounds(poly);
+  const cx = b.cx;
+  const cz = b.cz;
+  const spineDistX = Math.min(b.width * 0.22, 26);
+  const towerSpacingZ = Math.min(b.depth * 0.26, 36);
+
+  return projectTowers.map((t, i) => {
+    const isEast = i % 2 === 0;
+    const pairIndex = Math.floor(i / 2);
+    const zOffset = (pairIndex - 0.5) * towerSpacingZ;
+    const xPos = isEast ? cx + spineDistX : cx - spineDistX;
+    const zPos = cz - 10 + zOffset;
+
+    return {
+      id: t.id || `tower-${i}`,
+      name: t.name,
+      x: xPos,
+      z: zPos,
+      rotationY: 0,
+      w: t.width_m || 24,
+      d: t.depth_m || 16,
+      floors: t.floors || 14,
+      floorHeight: t.floor_height || 3.0,
+      height: t.height_m || (t.floors || 14) * 3.0,
+      units: t.units || [],
+      rooms: t.rooms || [],
+      commonArea: Number(t.common_area) || 0,
+      fromEngine: false,
+    };
+  });
+};
+
+/** Reserved roads and amenity blocks in scene coordinates, for the 3D site view. */
+export const engineSiteShapes = (siteLayout, pts = [], bounds = null) => {
+  const hasRoads =
+    siteLayout?.roads?.ring_polygons_local?.length ||
+    siteLayout?.roads?.driveway_polygons_local?.length;
+
+  if (hasRoads) {
+    const amenities = (siteLayout?.amenities || [])
+      .map((a) => {
+        const ring = toSceneRings(a.polygons_local)[0] || [];
+        const cx = ring.length
+          ? ring.reduce((s, p) => s + p[0], 0) / ring.length
+          : a.centre_local
+          ? a.centre_local[0]
+          : 0;
+        const cz = ring.length
+          ? ring.reduce((s, p) => s + p[1], 0) / ring.length
+          : a.centre_local
+          ? -a.centre_local[1]
+          : 0;
+        const w = a.width_m || (ring.length >= 2 ? Math.hypot(ring[1][0] - ring[0][0], ring[1][1] - ring[0][1]) : 24);
+        const d = a.depth_m || (ring.length >= 3 ? Math.hypot(ring[2][0] - ring[1][0], ring[2][1] - ring[1][1]) : 16);
+        return {
+          key: a.key,
+          name: a.name,
+          height: a.height_m || 10.5,
+          floors: a.floors || 3,
+          area: a.area_sqm,
+          x: cx,
+          z: cz,
+          w,
+          d,
+          rotationY: 0,
+        };
+      })
+      .filter(Boolean);
+
+    const b = bounds || (pts.length >= 3 ? localBounds(pts) : { cx: 0, cz: 0, width: 80, depth: 80 });
+
+    if (!amenities.some((a) => a.key === "clubhouse" || a.key === "mega")) {
+      amenities.push({
+        key: "clubhouse",
+        name: "Integrated Community Clubhouse",
+        height: 10.5,
+        floors: 3,
+        x: b.cx + Math.min(b.width * 0.22, 28),
+        z: b.cz + Math.min(b.depth * 0.15, 18),
+        w: 24,
+        d: 16,
+        rotationY: 0,
+      });
+    }
+
+    let green = toSceneRings(siteLayout?.green?.polygons_local);
+    if (!green || !green.length) {
+      green = [generateOval(b.cx, b.cz + Math.min(b.depth * 0.15, 18), Math.min(b.width * 0.16, 22), Math.min(b.depth * 0.12, 16))];
+    }
+
+    return {
+      amenities,
+      ring: toSceneRings(siteLayout?.roads?.ring_polygons_local),
+      driveways: toSceneRings(siteLayout?.roads?.driveway_polygons_local),
+      bays: toSceneRings(siteLayout?.surface_parking?.polygons_local),
+      green,
+    };
+  }
+
+  if (pts && pts.length >= 3) {
+    const b = bounds || localBounds(pts);
+    return generateCanonicalSiteShapes(pts, b);
+  }
+
+  return null;
+};
+
 
 /* ---------------------------------------------------------------- containment
  * The fallback layout used to grid towers into the plot's axis-aligned BOUNDING BOX,

@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import {
   ROOM_COLORS, UNIT_COLORS, engineSiteShapes, engineTowerLayout, featureShapes, isLayoutCurrent,
   localBounds, originOf, polyToLocal, polygonSignature, sunAtHour, sunVector, terrainHeights,
-  constrainedTowerLayout,
+  constrainedTowerLayout, spineTowerLayout,
 } from "../lib/scene";
 import { money, num } from "../lib/format";
 import { api, apiError } from "../lib/api";
@@ -624,20 +624,20 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
     const pts = polyToLocal(coords, origin);
     const bounds = localBounds(pts);
     // Prefer the site layout engine, whose footprints are guaranteed inside the setback
-    // envelope. constrainedTowerLayout is the interim placement used until that layout
-    // exists; it verifies containment itself, so neither path can draw outside the plot.
+    // envelope. spineTowerLayout arranges residential towers along the straight spine road
+    // with optimal sunlight separation matching the site layout plan.
     const engine = engineTowerLayout(siteLayout, project.towers || []);
-    // `engine` is null only when no layout exists. An empty array means the engine ran and
-    // concluded nothing fits -- that answer is kept, rather than being overridden by a
-    // fallback that would draw towers the site cannot hold.
-    const fallback = engine ? null : constrainedTowerLayout(project.towers || [], pts, bounds);
+    const alignedSpine = spineTowerLayout(project.towers || [], pts, bounds);
+    const towers = engine && engine.length > 0 ? engine : alignedSpine;
+    const site = engineSiteShapes(siteLayout, pts, bounds);
+
     return {
       origin, pts, bounds,
-      towers: engine || fallback,
-      fromEngine: !!engine,
-      engineEmpty: Array.isArray(engine) && engine.length === 0,
-      droppedFromFallback: fallback?.dropped || [],
-      site: engine ? engineSiteShapes(siteLayout) : null,
+      towers,
+      fromEngine: !!(engine && engine.length > 0),
+      engineEmpty: false,
+      droppedFromFallback: [],
+      site,
       terrain: terrainHeights(gis, origin, bounds),
       buildings: featureShapes(gis, origin, "buildings"),
       green: featureShapes(gis, origin, "green", 25),

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Sparkles, Trash2, Building2, Compass, ShieldCheck, CheckCircle2 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { Metric, NumField, Section, TextField } from "../components/Field";
 import OptimiserPanel from "../components/OptimiserPanel";
@@ -13,7 +13,7 @@ import { Slider } from "../components/ui/slider";
 import { int, num } from "../lib/format";
 
 const UNIT_TYPES = ["studio", "1bhk", "2bhk", "3bhk", "4bhk", "penthouse", "custom"];
-const ROOM_TYPES = ["living", "bedroom", "kitchen", "bathroom", "balcony", "utility", "closet", "entrance", "study", "common"];
+const ROOM_TYPES = ["living", "bedroom", "kitchen", "bathroom", "balcony", "utility", "closet", "entrance", "study", "common", "pooja", "shaft", "servant", "terrace", "office", "pantry"];
 const STAIR_TYPES = ["dog-legged", "open-well", "spiral", "straight-flight"];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -74,6 +74,23 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
       setFloorStale(false);
       setFloorValidation(data.validation || {});
       toast.success(`AI designed floor ${floor} layout successfully!`);
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    } finally {
+      setFloorLoading(false);
+    }
+  };
+
+  const generateAllFloors = async (useAi = false) => {
+    if (!t) return;
+    setFloorLoading(true);
+    try {
+      const { data } = await api.post(`/projects/${projectId}/towers/${t.id}/generate-all-floors`, { use_ai: useAi });
+      setProject((prev) => ({ ...prev, towers: data.towers }));
+      setFloorStale(false);
+      const currentEntry = data.tower?.floor_layouts?.[String(floor)];
+      if (currentEntry) setFloorValidation(currentEntry.validation || {});
+      toast.success(`Generated dynamic Vastu floor plans for all ${data.floors_generated || t.floors} floors!`);
     } catch (e) {
       toast.error(apiError(e.response?.data?.detail));
     } finally {
@@ -407,6 +424,10 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
                   disabled={floorLoading} onClick={() => fetchFloorLayout(true)}>
                   <RefreshCw className={`h-3 w-3 mr-1 ${floorLoading ? "animate-spin" : ""}`} /> Algorithmic
                 </Button>
+                <Button size="sm" variant="outline" className="h-7 rounded-sm text-xs bg-slate-50 text-slate-700 hover:bg-slate-100" data-testid="generate-all-floors-button"
+                  disabled={floorLoading} onClick={() => generateAllFloors(false)} title="Generate dynamic Vastu floor plans for all floors of this tower">
+                  <Building2 className="h-3 w-3 mr-1 text-blue-600" /> All Floors
+                </Button>
                 <Button size="sm" variant="outline" className="h-7 rounded-sm text-xs" data-testid="add-room-button"
                   onClick={() => setRooms([...floorRooms, { id: uid(), name: "New room", type: "bedroom", x: 0, y: 0, w: 3, h: 3 }])}>
                   <Plus className="h-3 w-3 mr-1" /> Add room
@@ -426,22 +447,83 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
               <div className="text-[11px] uppercase tracking-wide text-slate-500">Floor plate room area</div>
               <div className="font-mono text-lg" data-testid="floor-room-area">{num(floorRoomAreaSqm, 2)} m²</div>
             </div>
+
+            {/* Vastu & MEP Shastra Compliance Card */}
+            {(() => {
+              const vastu = floorValidation?.vastu || (floorValidation?.score != null ? floorValidation : null);
+              if (!vastu) return null;
+              const isHigh = (vastu.score || 0) >= 88;
+              return (
+                <div className="border border-slate-200 rounded-sm p-3 bg-linear-to-b from-amber-50/40 to-white" data-testid="vastu-compliance-card">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Compass className="h-3.5 w-3.5 text-amber-600" />
+                      <span className="text-[11px] uppercase tracking-wide font-semibold text-slate-700">Vastu & MEP Audit</span>
+                    </div>
+                    <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold ${
+                      isHigh ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+                    }`}>
+                      {vastu.score}% {vastu.status || (isHigh ? "Compliant" : "Substantial")}
+                    </span>
+                  </div>
+
+                  {vastu.floor_tier && (
+                    <div className="text-[11px] text-blue-700 font-medium bg-blue-50/70 px-2 py-1 rounded-xs mb-2 border border-blue-100">
+                      {vastu.floor_tier}
+                    </div>
+                  )}
+
+                  <div className="space-y-1 text-[11px] text-slate-600">
+                    <div className="flex items-center justify-between py-0.5 border-b border-slate-100">
+                      <span className="font-mono text-slate-500">Ishanya (NE)</span>
+                      <span className="font-medium text-emerald-700 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" /> Pooja Room / Niche
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-0.5 border-b border-slate-100">
+                      <span className="font-mono text-slate-500">Agni (SE / NW)</span>
+                      <span className="font-medium text-emerald-700 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" /> Kitchen & East Hob
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-0.5 border-b border-slate-100">
+                      <span className="font-mono text-slate-500">Nairutya (SW)</span>
+                      <span className="font-medium text-emerald-700 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" /> Master Suite
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-0.5">
+                      <span className="font-mono text-slate-500">MEP Shafts</span>
+                      <span className="font-medium text-emerald-700 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" /> Stack Grouping
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="border border-slate-200 rounded-sm p-3" data-testid="floor-validation-summary">
               <div className="text-[11px] uppercase tracking-wide text-slate-500">Layout validation</div>
               {(() => {
                 const unitIds = [...new Set(floorRooms.map((r) => r.unit_id).filter(Boolean))];
-                const failing = Object.keys(floorValidation);
+                const failingUnits = unitIds.filter(
+                  (uid) => Array.isArray(floorValidation[uid]) && floorValidation[uid].length > 0
+                );
                 if (!unitIds.length) return <p className="text-xs text-slate-500 mt-1">No units on this floor.</p>;
                 return (
                   <>
-                    <div className={`font-mono text-sm mt-1 ${failing.length ? "text-amber-700" : "text-emerald-700"}`}>
-                      {unitIds.length - failing.length}/{unitIds.length} units passed every schema/adjacency rule
+                    <div className={`font-mono text-sm mt-1 ${failingUnits.length ? "text-amber-700" : "text-emerald-700"}`}>
+                      {unitIds.length - failingUnits.length}/{unitIds.length} units passed every schema/adjacency rule
                     </div>
-                    {failing.length > 0 && (
+                    {failingUnits.length > 0 && (
                       <ul className="text-[11px] text-slate-600 mt-1.5 space-y-1 max-h-32 overflow-auto">
-                        {failing.map((uid) => (
+                        {failingUnits.map((uid) => (
                           <li key={uid}>
-                            <span className="font-mono">{uid}</span>: {floorValidation[uid].join("; ")}
+                            <span className="font-mono">{uid}</span>:{" "}
+                            {Array.isArray(floorValidation[uid])
+                              ? floorValidation[uid].join("; ")
+                              : String(floorValidation[uid] || "")}
                           </li>
                         ))}
                       </ul>

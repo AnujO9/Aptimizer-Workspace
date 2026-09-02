@@ -491,9 +491,20 @@ def _resolve_code(stem: str, text: str) -> Tuple[Optional[str], str]:
     return None, stem.upper()
 
 
+# A corpus directory collects notes as well as code text -- an operator's own README
+# saying where the PDFs came from, a CHANGELOG of what was re-exported. Ingesting those is
+# not merely noise: _resolve_code reads a file's opening lines for a designation, so a note
+# that happens to mention IS 456 is indexed AS IS 456 and served back as its clause text.
+# Skipping them by name is cruder than a stem allow-list and keeps the "anything
+# unrecognised is still ingested" promise for the documents that matter.
+SKIP_STEMS = {"readme", "notes", "license", "licence", "changelog", "index", "contents"}
+
+
 def _corpus_files(directory: str) -> List[str]:
     """Sorted so that chunk order, and therefore vector row order, is reproducible."""
     found = glob(os.path.join(directory, "*.txt")) + glob(os.path.join(directory, "*.md"))
+    found = [p for p in found
+             if os.path.splitext(os.path.basename(p))[0].strip().lower() not in SKIP_STEMS]
     return sorted(found, key=lambda p: os.path.basename(p).lower())
 
 
@@ -924,10 +935,16 @@ def _designation_score(chunk: Dict[str, Any], keys: Set[str],
     """How squarely the query named this chunk.
 
     Exact identifiers are what semantic search is worst at and what engineers type
-    constantly, so a named code and clause together outrank any amount of phrasing
-    similarity. A code on its own is deliberately scored too low to clear RELEVANCE_FLOOR
-    unaided: otherwise "IS 456 Cl. 99.9" would come back with five arbitrary passages from
-    IS 456, when the honest answer to a clause the corpus does not hold is nothing at all.
+    constantly, which is why this signal exists at all. Note what it does NOT do: at
+    W_DESIGNATION a perfect code-and-clause match contributes 0.20, so it cannot on its own
+    outrank a strong vector match at 0.55. It wins the queries it is meant to win because a
+    bare "IS 456 Cl. 7.1" is nearly contentless to an embedding model and no chunk scores
+    highly on it. If a corpus turns out to bury exact-identifier queries under semantic
+    near-misses, W_DESIGNATION is the lever -- it would have to exceed W_VECTOR.
+
+    A code on its own is deliberately scored too low to clear RELEVANCE_FLOOR unaided:
+    otherwise "IS 456 Cl. 99.9" would come back with five arbitrary passages from IS 456,
+    when the honest answer to a clause the corpus does not hold is nothing at all.
     """
     code = chunk.get("code_norm") or ""
     code_hit = bool(q_code) and (code == q_code

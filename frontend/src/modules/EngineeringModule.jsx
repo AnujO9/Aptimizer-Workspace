@@ -239,65 +239,6 @@ const CodeLibrary = ({ query, setQuery, focusId, clearFocus }) => {
   );
 };
 
-/** Beam framing plan over the column grid.
- *
- *  Drawn rather than tabulated because the thing a designer checks first is whether the
- *  deep beams land where the long spans are. Colour is depth: the darker lines are the
- *  members that set the floor-to-floor height.
- */
-function BeamPlan({ layout }) {
-  const beams = layout?.beams || [];
-  if (!beams.length) return null;
-  const maxX = Math.max(...beams.map((b) => Math.max(b.x1, b.x2)));
-  const maxY = Math.max(...beams.map((b) => Math.max(b.y1, b.y2)));
-  const depths = beams.map((b) => b.depth_mm);
-  const dMin = Math.min(...depths);
-  const dMax = Math.max(...depths);
-  const pad = 14;
-  const scale = 520 / (maxX || 1);
-  const w = maxX * scale + pad * 2;
-  const h = maxY * scale + pad * 2;
-  // Thicker and darker as the section deepens, so the framing reads at a glance.
-  const shade = (d) => {
-    const t = dMax > dMin ? (d - dMin) / (dMax - dMin) : 0;
-    return { stroke: t > 0.5 ? "#1E40AF" : "#60A5FA", width: 1.5 + t * 2.5 };
-  };
-
-  return (
-    <div className="space-y-2">
-      <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="border border-slate-200 rounded-sm bg-white"
-        role="img" aria-label="Beam framing plan" data-testid="beam-plan">
-        {beams.map((b) => {
-          const { stroke, width } = shade(b.depth_mm);
-          return (
-            <g key={b.id}>
-              <line x1={pad + b.x1 * scale} y1={pad + b.y1 * scale}
-                x2={pad + b.x2 * scale} y2={pad + b.y2 * scale}
-                stroke={stroke} strokeWidth={width}
-                strokeDasharray={b.support === "continuous" ? "none" : "5 3"} />
-              <title>
-                {`${b.id} — ${b.span_m} m ${b.support}, ${b.width_mm}×${b.depth_mm} mm, L/d ${b.span_depth_ratio}`}
-              </title>
-            </g>
-          );
-        })}
-        {/* Columns sit at every grid intersection. */}
-        {Array.from(new Set(beams.flatMap((b) => [`${b.x1},${b.y1}`, `${b.x2},${b.y2}`]))).map((k) => {
-          const [x, y] = k.split(",").map(Number);
-          return <rect key={k} x={pad + x * scale - 3} y={pad + y * scale - 3} width="6" height="6"
-            fill="#0F172A" />;
-        })}
-      </svg>
-      <p className="text-[10px] text-slate-500 leading-snug">
-        Solid lines are continuous over interior columns; dashed lines are the end spans,
-        which are simply supported and so need a deeper section for the same span. Darker,
-        thicker lines are deeper beams. Hover any beam for its span and section.
-      </p>
-    </div>
-  );
-}
-
-
 export default function EngineeringModule({ project, analysis, update, readOnly, projectId, setProject }) {
   const [eng, setEng] = useState(null);
   const [tab, setTab] = useState("grid");
@@ -734,8 +675,7 @@ export default function EngineeringModule({ project, analysis, update, readOnly,
                       <h4 className="text-xs uppercase tracking-wide text-slate-500 mb-2">
                         Beam framing plan
                       </h4>
-                      <BeamPlan layout={mod.beam_layout} />
-                      <Table className="mt-3">
+                      <Table>
                         <TableHeader>
                           <TableRow>
                             <TableHead>Section (mm)</TableHead>

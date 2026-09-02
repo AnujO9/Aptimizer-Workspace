@@ -574,6 +574,8 @@ async def floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
     else:
         nonce = (int(existing.get("seed", -1)) + 1) if (existing and body.regenerate) else 0
         entry = floor_layout_entry(tower, body.floor, nonce)
+        vastu_audit = aifloorplan.audit_vastu_and_mep(entry["rooms"], body.floor, max(int(tower.get("floors") or 1), 1))
+        entry["validation"] = {**(entry.get("validation") or {}), "vastu": vastu_audit}
 
     tower["floor_layouts"][key] = entry
     if body.floor == 1:
@@ -594,6 +596,57 @@ async def ai_floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
     body.use_ai = True
     body.regenerate = True
     return await floor_layout(project_id, tower_id, body, user=user)
+
+
+class GenerateAllFloorsIn(BaseModel):
+    use_ai: bool = False
+
+
+@api.post("/projects/{project_id}/towers/{tower_id}/generate-all-floors")
+async def generate_all_floors(project_id: str, tower_id: str, body: GenerateAllFloorsIn = GenerateAllFloorsIn(),
+                              user: dict = Depends(get_current_user)):
+    """Generate dynamic Vastu-compliant architectural floor layouts for every floor of the tower."""
+    proj = await load_project(project_id, user, write=True)
+    towers = proj.get("towers") or []
+    tower = next((t for t in towers if t.get("id") == tower_id), None)
+    if not tower:
+        raise HTTPException(status_code=404, detail="Tower not found")
+
+    floors = max(int(tower.get("floors") or 1), 1)
+    tower.setdefault("floor_layouts", {})
+    current_hash = layoutlib.unit_mix_hash(tower)
+
+    for fl in range(1, floors + 1):
+        key = str(fl)
+        if body.use_ai:
+            rooms, validation = await aifloorplan.generate_ai_floor_layout(tower, fl)
+            entry = {
+                "rooms": rooms,
+                "validation": validation,
+                "seed": 888 + fl,
+                "unit_mix_hash": current_hash,
+                "generated_at": now_iso(),
+                "ai_generated": True,
+            }
+        else:
+            rooms, validation = aifloorplan.generate_architectural_template(tower, fl)
+            entry = {
+                "rooms": rooms,
+                "validation": validation,
+                "seed": fl,
+                "unit_mix_hash": current_hash,
+                "generated_at": now_iso(),
+                "ai_generated": False,
+            }
+        tower["floor_layouts"][key] = entry
+        if fl == 1:
+            tower["rooms"] = entry["rooms"]
+
+    await db.projects.update_one({"_id": oid(project_id)},
+                                 {"$set": {"towers": towers, "updated_at": now_iso()}})
+    await log_activity(project_id, user, "tower.all_floors_generated",
+                       f"{tower.get('name')} · all {floors} floors{' (AI)' if body.use_ai else ''}")
+    return {"tower": tower, "towers": towers, "floors_generated": floors}
 
 
 @api.get("/projects/{project_id}/analysis")
@@ -844,7 +897,7 @@ async def codes_ask(body: CodeAskIn, user: dict = Depends(get_current_user)):
     except ailib.AIFailed as exc:
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
 
-    cites = citelib.verify_with_extracts(result["text"], sources) if hasattr(citelib, "verify_with_extracts") else citelib.verify(result["text"])
+    cites = citelib.verify_with_extracts(result["text"], sources)
     return {"answered": True, "answer": result["text"], "sources": sources,
             "verified_citations": cites["resolved"],
             "unverified_citations": cites["unverified"],
@@ -1327,7 +1380,7 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
 
     # Citation guard. The model is given the registry to cite from; this checks what came
     # back against it, including content entailment for numerical values against extracts.
-    cites = citelib.verify_with_extracts(result["text"], extracts) if hasattr(citelib, "verify_with_extracts") else citelib.verify(result["text"])
+    cites = citelib.verify_with_extracts(result["text"], extracts)
     reply = {"role": "assistant", "content": result["text"],
              "model": result["model"], "provider": result["provider"],
              "at": now_iso(), "tier": tier,
@@ -1450,7 +1503,7 @@ async def ai_chat_stream(project_id: str, body: ChatIn,
                 return
 
         text = "".join(parts)
-        cites = citelib.verify_with_extracts(text, extracts) if hasattr(citelib, "verify_with_extracts") else citelib.verify(text)
+        cites = citelib.verify_with_extracts(text, extracts)
         reply = {"role": "assistant", "content": text, "model": model or "unknown",
                  "provider": prov or "unknown", "at": now_iso(), "tier": tier,
                  "unverified_citations": cites["unverified"],

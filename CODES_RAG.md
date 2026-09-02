@@ -103,8 +103,12 @@ error, no other feature notices.
 **No `GEMINI_API_KEY`**: the build skips embedding and retrieval runs keyword-only. Every
 hit comes back with `degraded: true`, and the UI should say so. Exact lookups ("IS 1893
 Cl. 7.6.2", "Zone IV") work as well as they ever did; paraphrased questions are weaker.
-The relevance floor means the same thing in both modes — the weights are renormalised —
-so degraded mode still returns nothing rather than returning junk.
+The relevance floor is applied in both modes and the weights are renormalised so it stays
+reachable, but be honest about what that buys you: with the keyword weight carrying
+0.25/0.45 of the score, a two-word overlap on common terms is enough to clear the floor.
+Degraded mode is therefore looser than vector mode, not equally strict — it will return a
+loosely related clause where vector mode would have returned nothing. Treat `degraded:
+true` as "check the clause yourself", which is why every hit carries it.
 
 ## 6. Endpoints
 
