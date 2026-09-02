@@ -128,44 +128,215 @@ const FlatFeatures = ({ items, color, y = 0.06 }) =>
     );
   });
 
-/** Reserved circulation, drawn flat on the ground plane.
- *
- *  A THREE.Shape built from (x, z) pairs sits in the shape's local XY plane; rotating by
- *  +PI/2 about X maps (x, z, 0) -> (x, 0, z), which is the scene frame. (Note the older
- *  featureShapes helper above uses -PI/2, which mirrors the z axis — see the GIS overlay.)
- */
-const RoadLayer = ({ rings, color, y, opacity = 0.75 }) =>
+/** Plot interior rendered in lush green lawn */
+const PlotLushGreen = ({ pts }) => {
+  const shape = useMemo(() => {
+    if (!pts || pts.length < 3) return null;
+    return new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)));
+  }, [pts]);
+
+  if (!shape) return null;
+  return (
+    <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.02, 0]} receiveShadow>
+      <shapeGeometry args={[shape]} />
+      <meshStandardMaterial color="#22C55E" roughness={0.85} side={THREE.DoubleSide} />
+    </mesh>
+  );
+};
+
+/** Central landscaped open space / oval green park from site engine */
+const CentralPark = ({ rings }) =>
   (rings || []).map((pts, i) =>
     pts.length < 3 ? null : (
-      <mesh key={i} rotation={[Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
-        <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
-        <meshStandardMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} />
-      </mesh>
+      <group key={`park-${i}`}>
+        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.08, 0]} receiveShadow>
+          <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
+          <meshStandardMaterial color="#15803D" roughness={0.8} side={THREE.DoubleSide} />
+        </mesh>
+        <Line points={[...pts, pts[0]].map(([x, z]) => [x, 0.09, z])} color="#166534" lineWidth={2} />
+      </group>
     )
   );
 
-/** Standalone low-rise amenity blocks — clubhouse, gym, pool. */
-const AmenityMesh = ({ block }) => (
-  <group position={[block.x, 0, block.z]} rotation={[0, block.rotationY || 0, 0]}>
-    <mesh position={[0, block.height / 2, 0]} castShadow receiveShadow>
-      <boxGeometry args={[block.w, block.height, block.d]} />
-      <meshStandardMaterial
-        color={block.key === "pool" ? "#38BDF8" : "#A78BFA"}
-        transparent
-        opacity={block.key === "pool" ? 0.75 : 0.95}
-        roughness={0.7}
-      />
-    </mesh>
-    <Html position={[0, block.height + 3, 0]} center>
-      <div
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm border bg-violet-50 border-violet-300 text-violet-800"
-        data-testid={`amenity-label-${block.key}`}
-      >
-        {block.name}
-      </div>
-    </Html>
-  </group>
-);
+const getDrivewayCenterline = (pts) => {
+  if (!pts || pts.length < 4) return null;
+  const p0 = pts[0];
+  const p1 = pts[1];
+  const p2 = pts[2];
+  const p3 = pts[3];
+  const d01 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+  const d12 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+  if (d12 > d01) {
+    return [
+      [(p0[0] + p1[0]) / 2, 0.17, (p0[1] + p1[1]) / 2],
+      [(p3[0] + p2[0]) / 2, 0.17, (p3[1] + p2[1]) / 2],
+    ];
+  }
+  return [
+    [(p0[0] + p3[0]) / 2, 0.17, (p0[1] + p3[1]) / 2],
+    [(p1[0] + p2[0]) / 2, 0.17, (p1[1] + p2[1]) / 2],
+  ];
+};
+
+/** Asphalt Black Roads with White Dotted/Dashed Centerlines and Concrete Kerbs */
+const AsphaltRoadLayer = ({ rings, y = 0.14 }) => {
+  const centerlines = useMemo(() => {
+    const lines = [];
+    (rings || []).forEach((pts) => {
+      if (pts.length === 4 || pts.length === 5) {
+        const cl = getDrivewayCenterline(pts);
+        if (cl) lines.push(cl);
+      } else if (pts.length > 5) {
+        for (let i = 0; i < pts.length - 1; i += 2) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          lines.push([
+            [a[0], 0.17, a[1]],
+            [b[0], 0.17, b[1]],
+          ]);
+        }
+      }
+    });
+    return lines;
+  }, [rings]);
+
+  return (
+    <group>
+      {/* 1. Deep Asphalt Charcoal Black Surface */}
+      {(rings || []).map((pts, i) =>
+        pts.length < 3 ? null : (
+          <mesh key={`asphalt-${i}`} rotation={[Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
+            <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
+            <meshStandardMaterial color="#18181B" roughness={0.88} metalness={0.08} side={THREE.DoubleSide} />
+          </mesh>
+        )
+      )}
+
+      {/* 2. Concrete Road Curb Edges */}
+      {(rings || []).map((pts, i) =>
+        pts.length < 3 ? null : (
+          <Line key={`curb-${i}`} points={[...pts, pts[0]].map(([x, z]) => [x, y + 0.02, z])} color="#64748B" lineWidth={1.5} />
+        )
+      )}
+
+      {/* 3. White Dotted/Dashed Centerline */}
+      {centerlines.map(([p1, p2], i) => (
+        <Line
+          key={`centerline-${i}`}
+          points={[p1, p2]}
+          color="#FFFFFF"
+          lineWidth={2.5}
+          dashed
+          dashScale={1.5}
+          dashSize={1.5}
+          gapSize={1.2}
+        />
+      ))}
+    </group>
+  );
+};
+
+/** Multi-storey Integrated Community Clubhouse housing Lounge, Gymnasium & Rooftop Swimming Pool */
+const AmenityMesh = ({ block }) => {
+  const isClubhouse = block.key === "clubhouse" || block.key === "mega";
+  const h = isClubhouse ? Math.max(block.height || 10.5, 9.0) : (block.height || 4.5);
+  const w = block.w || 25.0;
+  const d = block.d || 15.0;
+
+  if (!isClubhouse) {
+    return (
+      <group position={[block.x, 0, block.z]} rotation={[0, block.rotationY || 0, 0]}>
+        <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[w, h, d]} />
+          <meshStandardMaterial
+            color={block.key === "pool" ? "#0284C7" : "#A78BFA"}
+            transparent
+            opacity={block.key === "pool" ? 0.85 : 0.95}
+            roughness={0.5}
+          />
+        </mesh>
+        <Html position={[0, h + 2.5, 0]} center>
+          <div
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm border bg-violet-50 border-violet-300 text-violet-800 shadow-xs whitespace-nowrap"
+            data-testid={`amenity-label-${block.key}`}
+          >
+            {block.name}
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  const poolW = w * 0.65;
+  const poolD = d * 0.55;
+
+  return (
+    <group position={[block.x, 0, block.z]} rotation={[0, block.rotationY || 0, 0]}>
+      {/* 3-Storey Building Body */}
+      <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, h, d]} />
+        <meshStandardMaterial color="#F8FAFC" roughness={0.35} />
+      </mesh>
+
+      {/* Ground Floor Entrance & Community Lounge Glass Facade */}
+      <mesh position={[0, 1.8, d / 2 + 0.05]}>
+        <boxGeometry args={[w * 0.8, 3.2, 0.1]} />
+        <meshStandardMaterial color="#93C5FD" transparent opacity={0.65} roughness={0.2} />
+      </mesh>
+
+      {/* 1st Floor Fitness Center & Gym Floor-to-ceiling Windows */}
+      <mesh position={[0, 5.2, d / 2 + 0.05]}>
+        <boxGeometry args={[w * 0.85, 3.0, 0.1]} />
+        <meshStandardMaterial color="#60A5FA" transparent opacity={0.6} roughness={0.2} />
+      </mesh>
+
+      {/* Rooftop Wooden Sun Deck Terrace */}
+      <mesh position={[0, h + 0.04, 0]} receiveShadow>
+        <boxGeometry args={[w, 0.08, d]} />
+        <meshStandardMaterial color="#D97706" roughness={0.6} />
+      </mesh>
+
+      {/* Rooftop Swimming Pool (Crystal Turquoise Water) */}
+      <mesh position={[0, h + 0.09, 0]}>
+        <boxGeometry args={[poolW, 0.06, poolD]} />
+        <meshStandardMaterial color="#0284C7" transparent opacity={0.88} roughness={0.1} metalness={0.2} />
+      </mesh>
+
+      {/* White Pool Coping Border */}
+      <mesh position={[0, h + 0.08, 0]}>
+        <boxGeometry args={[poolW + 0.6, 0.04, poolD + 0.6]} />
+        <meshStandardMaterial color="#FFFFFF" roughness={0.3} />
+      </mesh>
+
+      {/* Rooftop Glass Safety Parapet */}
+      <mesh position={[0, h + 0.5, d / 2]}>
+        <boxGeometry args={[w, 0.9, 0.05]} />
+        <meshStandardMaterial color="#BFDBFE" transparent opacity={0.4} />
+      </mesh>
+      <mesh position={[0, h + 0.5, -d / 2]}>
+        <boxGeometry args={[w, 0.9, 0.05]} />
+        <meshStandardMaterial color="#BFDBFE" transparent opacity={0.4} />
+      </mesh>
+      <mesh position={[w / 2, h + 0.5, 0]}>
+        <boxGeometry args={[0.05, 0.9, d]} />
+        <meshStandardMaterial color="#BFDBFE" transparent opacity={0.4} />
+      </mesh>
+      <mesh position={[-w / 2, h + 0.5, 0]}>
+        <boxGeometry args={[0.05, 0.9, d]} />
+        <meshStandardMaterial color="#BFDBFE" transparent opacity={0.4} />
+      </mesh>
+
+      <Html position={[0, h + 3.2, 0]} center>
+        <div
+          className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-sm border bg-blue-50/95 border-blue-300 text-blue-900 shadow-sm whitespace-nowrap"
+          data-testid={`amenity-label-${block.key}`}
+        >
+          Integrated Community Clubhouse · Lounge, Gym &amp; Rooftop Pool
+        </div>
+      </Html>
+    </group>
+  );
+};
 
 const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, violations, onSelect, layers }) => {
   const slabRef = useRef();
@@ -768,6 +939,8 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
               {view !== "floorplan" && (
                 <>
                   <Terrain bounds={scene.bounds} terrain={scene.terrain} />
+                  {/* Lush green lawn over the entire plot interior */}
+                  <PlotLushGreen pts={scene.pts} />
                   <PlotOutline pts={scene.pts} roadEdges={project.plot?.road_edges} />
                   <CompassRose bounds={scene.bounds} orientation={project.plot?.orientation_deg || 0} />
                 </>
@@ -781,14 +954,25 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
                 </>
               )}
 
-              {/* Reserved circulation, parking, landscape and amenity blocks from the
-                  site layout engine. Drawn bottom-up so kerbs read over the carriageway. */}
+              {/* Reserved circulation, parking, central park and integrated clubhouse from site engine */}
               {scene.site && view !== "floorplan" && layers.site && (
                 <>
-                  <RoadLayer rings={scene.site.green} color="#4D9A3D" y={0.1} opacity={0.9} />
-                  <RoadLayer rings={scene.site.ring} color="#6B7280" y={0.14} opacity={0.95} />
-                  <RoadLayer rings={scene.site.driveways} color="#6B7280" y={0.15} opacity={0.95} />
-                  <RoadLayer rings={scene.site.bays} color="#CBD5E1" y={0.2} opacity={1} />
+                  {/* Central landscaped park */}
+                  <CentralPark rings={scene.site.green} />
+                  {/* Asphalt black access ring road with white dashed centerlines */}
+                  <AsphaltRoadLayer rings={scene.site.ring} y={0.13} isRing={true} />
+                  {/* Asphalt black internal spine driveways with white dashed centerlines */}
+                  <AsphaltRoadLayer rings={scene.site.driveways} y={0.14} />
+                  {/* Surface parking bays */}
+                  {(scene.site.bays || []).map((pts, i) =>
+                    pts.length < 3 ? null : (
+                      <mesh key={`bay-${i}`} rotation={[Math.PI / 2, 0, 0]} position={[0, 0.16, 0]} receiveShadow>
+                        <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
+                        <meshStandardMaterial color="#94A3B8" transparent opacity={0.9} side={THREE.DoubleSide} />
+                      </mesh>
+                    )
+                  )}
+                  {/* Multi-storey Integrated Community Clubhouse with Rooftop Pool */}
                   {scene.site.amenities.map((a) => (
                     <AmenityMesh key={a.key} block={a} />
                   ))}

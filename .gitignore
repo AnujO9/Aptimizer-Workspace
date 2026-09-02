@@ -109,5 +109,14 @@ frontend_dev.log
 ._*
 .!*!*
 
+# Code corpus and its derived search index. BIS standards and the National
+# Building Code are copyrighted; the corpus under codes_corpus/ is the operator's
+# own licensed copy of that text and must never be committed. codes_index/ is
+# built from it — vectors, chunks and a manifest — so it carries the same text by
+# another name. Both are local to a deployment; rebuild with
+# `cd backend && python -m codesearch build`.
+backend/codes_corpus/
+backend/codes_index/
+
 # Keep the documented template; real secrets stay ignored above.
 !.env.example

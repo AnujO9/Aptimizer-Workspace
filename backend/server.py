@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -27,6 +29,7 @@ import aptspeed as speedlib
 import aptsuggest as suggestlib
 import citations as citelib
 import auth as authlib
+import codesearch as codesearchlib
 import engine
 import engineering as englib
 import finance as financelib
@@ -39,6 +42,7 @@ import reports as reportlib
 import schedule as schedlib
 import siteplan as siteplanlib
 from defaults import default_project, default_tower, floor_layout_entry
+import aifloorplan
 
 client = AsyncIOMotorClient(os.environ['MONGO_URL'])
 db = client[os.environ['DB_NAME']]
@@ -530,6 +534,7 @@ async def add_tower(project_id: str, user: dict = Depends(get_current_user)):
 class FloorLayoutIn(BaseModel):
     floor: int
     regenerate: bool = False
+    use_ai: bool = False
 
 
 @api.post("/projects/{project_id}/towers/{tower_id}/floor-layout")
@@ -551,13 +556,25 @@ async def floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
     existing = tower["floor_layouts"].get(key)
     current_hash = layoutlib.unit_mix_hash(tower)
 
-    if existing and not body.regenerate:
+    if existing and not body.regenerate and not body.use_ai:
         return {"tower": tower, "towers": towers, "rooms": existing["rooms"],
                 "validation": existing.get("validation") or {},
                 "stale": existing.get("unit_mix_hash") != current_hash}
 
-    nonce = (int(existing.get("seed", -1)) + 1) if (existing and body.regenerate) else 0
-    entry = floor_layout_entry(tower, body.floor, nonce)
+    if body.use_ai:
+        rooms, validation = await aifloorplan.generate_ai_floor_layout(tower, body.floor)
+        entry = {
+            "rooms": rooms,
+            "validation": validation,
+            "seed": 888,
+            "unit_mix_hash": current_hash,
+            "generated_at": now_iso(),
+            "ai_generated": True,
+        }
+    else:
+        nonce = (int(existing.get("seed", -1)) + 1) if (existing and body.regenerate) else 0
+        entry = floor_layout_entry(tower, body.floor, nonce)
+
     tower["floor_layouts"][key] = entry
     if body.floor == 1:
         tower["rooms"] = entry["rooms"]
@@ -565,9 +582,18 @@ async def floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
     await db.projects.update_one({"_id": oid(project_id)},
                                  {"$set": {"towers": towers, "updated_at": now_iso()}})
     await log_activity(project_id, user, "tower.floor_layout_generated",
-                       f"{tower.get('name')} · floor {body.floor}")
+                       f"{tower.get('name')} · floor {body.floor}{' (AI)' if body.use_ai else ''}")
     return {"tower": tower, "towers": towers, "rooms": entry["rooms"],
-            "validation": entry.get("validation") or {}, "stale": False}
+            "validation": entry.get("validation") or {}, "stale": False, "ai_generated": body.use_ai}
+
+
+@api.post("/projects/{project_id}/towers/{tower_id}/ai-floor-layout")
+async def ai_floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
+                          user: dict = Depends(get_current_user)):
+    """Explicitly generate an AI-architected residential floor layout for a tower."""
+    body.use_ai = True
+    body.regenerate = True
+    return await floor_layout(project_id, tower_id, body, user=user)
 
 
 @api.get("/projects/{project_id}/analysis")
@@ -736,6 +762,119 @@ async def city_list(q: str = ""):
             "exposures": list(iscodes.EXPOSURE.keys()),
             "structural_systems": list(iscodes.RESPONSE_R.keys()),
             "green_checklist": iscodes.GREEN_CHECKLIST}
+
+
+# ---------------------------------------------------------------- clause retrieval
+# /iscodes above serves the 20-entry curated library: a code, a topic and a headline value.
+# These three serve the clause TEXT, out of whatever corpus the operator loaded. Nothing
+# here ships with the app, so all three have to read the same on an empty install as on a
+# full one -- the feature has nothing to say, and says which.
+#
+# codesearch is synchronous throughout: `search` may make a blocking embedding call for
+# the query, and the first call of either kind reads the index off disk. So the calls below
+# go through run_in_threadpool -- inline in an async handler they would stall the event
+# loop for the whole process, not just the request that asked.
+#
+# Authenticated, unlike /iscodes. The corpus is the operator's own licensed documents and
+# the manifest names their files; /ai/status is behind the same door for the same reason.
+
+class CodeAskIn(BaseModel):
+    question: str
+    project_id: Optional[str] = None
+    code_id: Optional[str] = None
+
+
+ASK_HITS = 6              # passages the answer may quote from
+SEARCH_HITS = 5           # default for the raw retrieval route
+SEARCH_HITS_MAX = 25      # a debugging route, not a bulk export of the corpus
+
+
+def _source(hit: Dict[str, Any], scores: bool = False) -> Dict[str, Any]:
+    """A retrieval hit as the reader sees it: enough to quote the clause and find it again.
+
+    The component scores are debugging output, so they travel only on the route that
+    exists to debug retrieval.
+    """
+    row = {k: hit.get(k) for k in ("chunk_id", "code", "clause", "heading", "text")}
+    row["score"] = hit.get("score")
+    if scores:
+        row.update({k: hit.get(k)
+                    for k in ("vector_score", "keyword_score", "designation_score")})
+    return row
+
+
+@api.post("/codes/ask")
+async def codes_ask(body: CodeAskIn, user: dict = Depends(get_current_user)):
+    """Answer a code question from the retrieved clause text -- or refuse to answer it."""
+    question = (body.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Ask a question")
+
+    hits = await run_in_threadpool(codesearchlib.search, question, ASK_HITS, body.code_id)
+    if not hits:
+        # The refusal is the feature, not a degraded path around it. Falling through to an
+        # unretrieved model answer would return exactly the fluent invented clause the
+        # corpus exists to replace, and the reader would have no way to tell which of the
+        # two they were given.
+        return {"answered": False,
+                "reason": "no matching clause in the loaded code corpus",
+                "sources": [], "answer": "",
+                "verified_citations": [], "unverified_citations": [],
+                "degraded": bool(codesearchlib.index_status()["degraded"])}
+
+    sources = [_source(h) for h in hits]
+    # The model is given the same rows the caller gets back, so every statement in the
+    # answer can be checked against the text it was drawn from.
+    context: Dict[str, Any] = {"question": question, "extracts": sources}
+    if body.project_id:
+        # Through load_project, so a project the user cannot see 404s or 403s here exactly
+        # as it does everywhere else. Read access is enough: asking a question stores
+        # nothing.
+        proj = await load_project(body.project_id, user)
+        an, eng = speedlib.cached_analysis(proj, engine.analyse, englib.analyse_engineering)
+        context["project_state"] = aptlib.build(proj, an, eng)
+
+    try:
+        result = await ailib.generate_markdown(
+            ailib.PROMPTS["codes"],
+            "Use only the extracts below.\n\n" + ailib.context_block(context),
+            session_hint=f"codes-{body.project_id or 'library'}")
+    except ailib.AIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ailib.AIFailed as exc:
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+
+    cites = citelib.verify_with_extracts(result["text"], sources) if hasattr(citelib, "verify_with_extracts") else citelib.verify(result["text"])
+    return {"answered": True, "answer": result["text"], "sources": sources,
+            "verified_citations": cites["resolved"],
+            "unverified_citations": cites["unverified"],
+            "unconfirmed_values": cites.get("unconfirmed_values", []),
+            "degraded": bool(hits[0].get("degraded"))}
+
+
+@api.get("/codes/search")
+async def codes_search(q: str = "", code_id: str = "", k: int = SEARCH_HITS,
+                       user: dict = Depends(get_current_user)):
+    """Retrieval on its own, with no model behind it.
+
+    The library UI reads it, and so does anyone asking why an answer quoted the clause it
+    did -- which is why the component scores come back here and nowhere else.
+    """
+    query = (q or "").strip()
+    if not query:
+        # An empty box is not an error: the search field calls this as the user types.
+        return {"results": [], "count": 0, "query": q, "degraded": False}
+    hits = await run_in_threadpool(codesearchlib.search, query,
+                                   max(1, min(k, SEARCH_HITS_MAX)), code_id or None)
+    return {"results": [_source(h, scores=True) for h in hits], "count": len(hits),
+            "query": q, "degraded": bool(hits and hits[0].get("degraded"))}
+
+
+@api.get("/codes/index")
+async def codes_index(user: dict = Depends(get_current_user)):
+    """What the index holds and whether it can answer, so the UI can show the feature as
+    unavailable WITH the reason rather than failing on a search that returns nothing."""
+    return await run_in_threadpool(codesearchlib.index_status)
 
 
 # ---------------------------------------------------------------- GIS & site intelligence
@@ -940,6 +1079,172 @@ class ChatIn(BaseModel):
 CHAT_TURNS_SENT = 12
 CHAT_TURNS_STORED = 60
 
+# Fewer extracts than /codes/ask gets: there the clause text is the whole answer, here it
+# shares the prompt with the entire project state.
+APT_HITS = 4
+
+
+def _attach_extracts(context: Dict[str, Any],
+                     extracts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Retrieved clause text added to a context that was cached without it.
+
+    speedlib.cached_context is keyed on the project's version, and these extracts were
+    retrieved for THIS question. Baked into the cached object they would answer every
+    later question about the project with whatever clauses the first one happened to
+    match, so they are attached after the cache has handed its context over -- and to a
+    copy, because mutating the cached dict would poison it for the life of the process.
+
+    aptcontext owns the serialisation and the extract budget and both tiers borrow it, so
+    the full and light payloads carry one "code_extracts" shape rather than two -- the
+    same one `aptcontext.build(code_extracts=...)` produces for a caller outside the cache.
+    """
+    if not extracts:
+        return context
+    return {**context, "code_extracts": aptlib._extracts(extracts)}
+
+
+
+_FOLLOWUP_MARKERS = re.compile(
+    r"\b(it|its|this|that|these|those|they|them|the same|above|previous|earlier"
+    r"|what about|and also|how about|compared to|governs?|limiting)\b", re.IGNORECASE)
+
+
+async def _rewrite_query(question: str, messages: List[Dict[str, Any]]) -> str:
+    """Rewrite a follow-up question into a standalone query for retrieval.
+
+    Only fires when prior turns exist and the question looks like a follow-up
+    (pronouns, short phrase, or references prior context). Falls back safely
+    to the original question if rewriting is unneeded or fails.
+    """
+    prior = [m for m in messages[:-1] if m.get("role") in ("user", "assistant")]
+    if not prior:
+        return question
+    words = question.split()
+    if len(words) > 7 and not _FOLLOWUP_MARKERS.search(question):
+        return question
+
+    recent = prior[-4:]
+    context_lines = [f"{m['role'].upper()}: {str(m.get('content', ''))[:150]}" for m in recent]
+    prompt = (
+        "Conversation:\n" + "\n".join(context_lines) +
+        f"\n\nLatest user question: {question}\n\n"
+        "Rewrite the latest question into a single standalone civil-engineering search query. "
+        "Resolve all pronouns (it, its, this, that) using the conversation context. "
+        "Output ONLY the rewritten search query, with no explanation or quotation marks."
+    )
+    try:
+        res = await ailib.generate_markdown(
+            "You are a search query rewriter for an Indian civil engineering code retrieval system.",
+            prompt,
+            session_hint="query-rewrite",
+            prefer_fast=True,
+            temperature=0.0
+        )
+        candidate = res.get("text", "").strip().strip('"\'`')
+        if candidate and 3 <= len(candidate) <= 300:
+            logger.info("apt.rewrite: %r -> %r", question, candidate)
+            return candidate
+    except Exception as exc:
+        logger.debug("Query rewriting skipped: %s", exc)
+    return question
+
+
+_WHATIF_TRIGGERS = re.compile(
+    r"\b(what\s+if|what\s+happens\s+if|how\s+does\s+.*\s+change\s+if|suppose\s+we|if\s+we\s+(?:change|increase|decrease|use))\b",
+    re.IGNORECASE
+)
+
+
+def _try_whatif(question: str, proj: Dict[str, Any], base: Dict[str, Any],
+                eng: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Detect what-if engineering questions, re-run analysis on modified params,
+    and return exact deterministic deltas between baseline and hypothetical state."""
+    if not _WHATIF_TRIGGERS.search(question):
+        return None
+
+    low = question.lower()
+    overrides: Dict[str, Any] = {}
+
+    # Concrete grade (e.g. "M30", "concrete grade 35", "M-40")
+    m = re.search(r"\b(?:m\s*(\d{2})|concrete\s*(?:grade)?\s*(?:is|to)?\s*m?\s*(\d{2}))\b", low)
+    if m:
+        grade = int(m.group(1) or m.group(2))
+        if grade in (15, 20, 25, 30, 35, 40, 45, 50, 55, 60):
+            overrides["concrete_grade"] = grade
+
+    # Steel grade (e.g. "Fe 500", "Fe550", "steel grade 500")
+    m = re.search(r"\b(?:fe\s*(\d{3})|steel\s*(?:grade)?\s*(?:is|to)?\s*(?:fe\s*)?(\d{3}))\b", low)
+    if m:
+        grade = int(m.group(1) or m.group(2))
+        if grade in (250, 415, 500, 550, 600):
+            overrides["steel_grade"] = grade
+
+    # Slab thickness (e.g. "slab thickness 150 mm", "150mm slab")
+    m = re.search(r"\b(?:(?:slab\s*(?:thickness)?|thickness)\s*(?:is|to|of)?\s*(\d{2,3})\s*mm|(\d{2,3})\s*mm\s*slab)\b", low)
+    if m:
+        thk = float(m.group(1) or m.group(2))
+        if 75 <= thk <= 400:
+            overrides["slab_thickness_mm"] = thk
+
+    # Soil type
+    m = re.search(r"\b(?:soil\s*(?:type|condition)?\s*(?:is|to)?\s*)(dense sand|medium sand|loose sand|hard rock|soft rock|stiff clay|medium clay|soft clay)\b", low)
+    if m:
+        overrides["soil_type"] = m.group(1).strip()
+
+    # Exposure condition
+    m = re.search(r"\b(?:exposure\s*(?:condition)?\s*(?:is|to)?\s*)(mild|moderate|severe|very severe|extreme)\b", low)
+    if m:
+        overrides["exposure_condition"] = m.group(1).strip()
+
+    if not overrides:
+        return None
+
+    cur_eng = eng.get("config") or {}
+    diffs = {k: v for k, v in overrides.items() if cur_eng.get(k) != v}
+    if not diffs:
+        return None
+
+    try:
+        mutated_proj = {**proj, "engineering": {**(proj.get("engineering") or {}), **diffs}}
+        mutated_eng = englib.analyse_engineering(mutated_proj, base)
+
+        s0 = eng.get("summary", {})
+        s1 = mutated_eng.get("summary", {})
+        deltas = {}
+        for k in ("base_shear_kn", "embodied_carbon_tco2e", "carbon_per_sqm_kg"):
+            v0, v1 = s0.get(k), s1.get(k)
+            if v0 is not None and v1 is not None:
+                pct = round(((v1 - v0) / v0) * 100, 2) if v0 else 0
+                deltas[k] = {"baseline": v0, "hypothetical": v1, "delta": round(v1 - v0, 2), "pct_change": pct}
+
+        for k in ("column_size", "foundation", "mix_ratio"):
+            v0, v1 = s0.get(k), s1.get(k)
+            if v0 != v1:
+                deltas[k] = {"baseline": v0, "hypothetical": v1}
+
+        checks_changed = []
+        m0_mods = eng.get("modules", {})
+        m1_mods = mutated_eng.get("modules", {})
+        for mod_id, mod0 in m0_mods.items():
+            mod1 = m1_mods.get(mod_id) or {}
+            c0 = {c["label"]: c["status"] for c in mod0.get("checks", []) if "label" in c}
+            c1 = {c["label"]: c["status"] for c in mod1.get("checks", []) if "label" in c}
+            for lbl, st0 in c0.items():
+                st1 = c1.get(lbl)
+                if st1 and st0 != st1:
+                    checks_changed.append({"check": lbl, "baseline": st0, "hypothetical": st1})
+
+        logger.info("apt.whatif: modified=%s deltas=%d checks_changed=%d",
+                    diffs, len(deltas), len(checks_changed))
+        return {
+            "parameter_changes": diffs,
+            "metric_deltas": deltas,
+            "status_changes": checks_changed,
+        }
+    except Exception as exc:
+        logger.warning("apt.whatif computation failed: %s", exc)
+        return None
+
 
 @api.post("/projects/{project_id}/ai/chat")
 async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_current_user)):
@@ -963,7 +1268,8 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
         reply = {"role": "assistant", "content": text, "model": "local",
                  "provider": "aptimizer", "at": now_iso(), "tier": tier,
                  "unverified_citations": [], "unconfirmed_clauses": [],
-                 "verified_citations": []}
+                 "verified_citations": [], "unconfirmed_values": [],
+                 "code_sources": []}
         thread = (messages + [reply])[-CHAT_TURNS_STORED:]
         await db.projects.update_one({"_id": oid(project_id)},
                                      {"$set": {"apt_thread": thread}})
@@ -971,6 +1277,12 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
                     project_id, timer.ms)
         return {"reply": reply, "thread": thread, "context_chars": 0,
                 "tier": tier, "prep_ms": timer.ms}
+
+    # Past the gate, so a model is going to be asked: query rewriting resolves follow-up
+    # pronouns to find the clause text that stops it answering from memory.
+    search_query = await _rewrite_query(question, messages)
+    extracts = await run_in_threadpool(codesearchlib.search, search_query, APT_HITS, None)
+    timer.mark("retrieval")
 
     # Engineering is the expensive half, so the light tier never computes it. Both halves
     # are cached on the project's updated_at, so a run of questions about an unchanged
@@ -984,6 +1296,14 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
         proj, tier,
         (lambda: aptlib.build(proj, an, eng)) if full
         else (lambda: speedlib.light_context(proj, an)))
+    context = _attach_extracts(context, extracts)
+
+    # What-if deterministic evaluation: if the question hypothetically modifies a design
+    # parameter, re-run engineering on a copy and inject the exact deltas into context.
+    if full and eng:
+        whatif = _try_whatif(question, proj, an, eng)
+        if whatif:
+            context = {**context, "what_if_analysis": whatif}
     timer.mark("context")
 
     serialised = ailib.context_block(context)
@@ -1006,16 +1326,19 @@ async def ai_chat(project_id: str, body: ChatIn, user: dict = Depends(get_curren
         raise HTTPException(status_code=502, detail=f"Assistant failed: {exc}")
 
     # Citation guard. The model is given the registry to cite from; this checks what came
-    # back against it. Unresolved references are returned, never quietly stripped -- a
-    # clean answer with a hole in it is worse than a flagged one. This runs on EVERY
-    # model-generated answer regardless of tier: no speed optimisation may skip it.
-    cites = citelib.verify(result["text"])
+    # back against it, including content entailment for numerical values against extracts.
+    cites = citelib.verify_with_extracts(result["text"], extracts) if hasattr(citelib, "verify_with_extracts") else citelib.verify(result["text"])
     reply = {"role": "assistant", "content": result["text"],
              "model": result["model"], "provider": result["provider"],
              "at": now_iso(), "tier": tier,
              "unverified_citations": cites["unverified"],
              "unconfirmed_clauses": cites["code_only"],
-             "verified_citations": cites["resolved"]}
+             "verified_citations": cites["resolved"],
+             "unconfirmed_values": cites.get("unconfirmed_values", []),
+             # The passages the answer was built from, stored with the message so the
+             # panel can open a citation onto the text it came from rather than asking the
+             # reader to take the clause number on trust.
+             "code_sources": [_source(h) for h in extracts]}
 
     # Storing the thread must NOT bump updated_at: that field is the analysis cache key,
     # so touching it here would invalidate the cache on every single message and undo the
@@ -1060,13 +1383,19 @@ async def ai_chat_stream(project_id: str, body: ChatIn,
             reply = {"role": "assistant", "content": text, "model": "local",
                      "provider": "aptimizer", "at": now_iso(), "tier": tier,
                      "unverified_citations": [], "unconfirmed_clauses": [],
-                     "verified_citations": []}
+                     "verified_citations": [], "unconfirmed_values": [],
+                     "code_sources": []}
             thread = (messages + [reply])[-CHAT_TURNS_STORED:]
             await db.projects.update_one({"_id": oid(project_id)},
                                          {"$set": {"apt_thread": thread}})
             yield "data: " + json.dumps({"delta": text}) + "\n\n"
             yield "data: " + json.dumps({"done": reply, "thread": thread}) + "\n\n"
             return
+
+        # Same as /ai/chat: retrieval only on the paths that reach a model, with query
+        # rewriting to resolve follow-up context.
+        search_query = await _rewrite_query(question, messages)
+        extracts = await run_in_threadpool(codesearchlib.search, search_query, APT_HITS, None)
 
         full = tier == speedlib.FULL
         an, eng = speedlib.cached_analysis(proj, engine.analyse,
@@ -1076,6 +1405,14 @@ async def ai_chat_stream(project_id: str, body: ChatIn,
             proj, tier,
             (lambda: aptlib.build(proj, an, eng)) if full
             else (lambda: speedlib.light_context(proj, an)))
+        context = _attach_extracts(context, extracts)
+
+        # What-if deterministic evaluation
+        if full and eng:
+            whatif = _try_whatif(question, proj, an, eng)
+            if whatif:
+                context = {**context, "what_if_analysis": whatif}
+
         serialised = ailib.context_block(context)
         logger.info("apt.stream project=%s tier=%s chars=%d prep_ms=%s",
                     project_id, tier, len(serialised), timer.ms)
@@ -1113,12 +1450,14 @@ async def ai_chat_stream(project_id: str, body: ChatIn,
                 return
 
         text = "".join(parts)
-        cites = citelib.verify(text)
+        cites = citelib.verify_with_extracts(text, extracts) if hasattr(citelib, "verify_with_extracts") else citelib.verify(text)
         reply = {"role": "assistant", "content": text, "model": model or "unknown",
                  "provider": prov or "unknown", "at": now_iso(), "tier": tier,
                  "unverified_citations": cites["unverified"],
                  "unconfirmed_clauses": cites["code_only"],
-                 "verified_citations": cites["resolved"]}
+                 "verified_citations": cites["resolved"],
+                 "unconfirmed_values": cites.get("unconfirmed_values", []),
+                 "code_sources": [_source(h) for h in extracts]}
         thread = (messages + [reply])[-CHAT_TURNS_STORED:]
         await db.projects.update_one({"_id": oid(project_id)},
                                      {"$set": {"apt_thread": thread}})

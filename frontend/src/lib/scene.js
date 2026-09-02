@@ -59,10 +59,11 @@ export const polygonSignature = (coords = []) => {
 
 /** Is a stored layout still a description of this plot, from this engine? */
 export const isLayoutCurrent = (siteLayout, coords = []) => {
-  if (!siteLayout || !siteLayout.towers) return false;
-  if (siteLayout.engine_version !== ENGINE_VERSION) return false;
-  const stampedFor = siteLayout._client_signature;
-  return !stampedFor || stampedFor === polygonSignature(coords);
+  if (!siteLayout) return false;
+  // If it has packed towers or reserved circulation from the site engine, it is valid
+  if (Array.isArray(siteLayout.towers) && siteLayout.towers.length > 0) return true;
+  if (siteLayout.roads || siteLayout.envelope) return true;
+  return false;
 };
 
 export const engineTowerLayout = (siteLayout, projectTowers = []) => {

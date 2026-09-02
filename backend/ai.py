@@ -237,12 +237,13 @@ async def _with_retries(models: list, call, label: str) -> dict:
     )
 
 
-async def _gemini_generate(key: str, models: list, system: str, prompt: str) -> dict:
+async def _gemini_generate(key: str, models: list, system: str, prompt: str,
+                           temperature: float = 0.15) -> dict:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=key)
-    config = types.GenerateContentConfig(system_instruction=system, temperature=0.3)
+    config = types.GenerateContentConfig(system_instruction=system, temperature=temperature)
 
     async def call(model):
         r = await client.aio.models.generate_content(model=model, contents=prompt, config=config)
@@ -252,7 +253,8 @@ async def _gemini_generate(key: str, models: list, system: str, prompt: str) -> 
 
 
 async def _openai_compatible_generate(key: str, base_url: str, models: list,
-                                      system: str, prompt: str, label: str) -> dict:
+                                      system: str, prompt: str, label: str,
+                                      temperature: float = 0.15) -> dict:
     """Any endpoint speaking the OpenAI chat-completions format -- xAI's Grok included."""
     from openai import AsyncOpenAI
 
@@ -263,7 +265,7 @@ async def _openai_compatible_generate(key: str, base_url: str, models: list,
             model=model,
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=temperature,
         )
         return r.choices[0].message.content if r.choices else None
 
@@ -271,7 +273,8 @@ async def _openai_compatible_generate(key: str, base_url: str, models: list,
 
 
 async def stream_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer",
-                          prefer_fast: bool = False):
+                          prefer_fast: bool = False,
+                          temperature: float = 0.15):
     """Yield the answer in chunks as the provider produces it.
 
     An async generator of text fragments, then a final ("__done__", model, provider)
@@ -303,7 +306,7 @@ async def stream_markdown(system: str, prompt: str, *, session_hint: str = "apti
             model=model,
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": prompt}],
-            temperature=0.3, stream=True)
+            temperature=temperature, stream=True)
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
@@ -316,7 +319,7 @@ async def stream_markdown(system: str, prompt: str, *, session_hint: str = "apti
         client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
         stream = await client.aio.models.generate_content_stream(
             model=model, contents=prompt,
-            config=gtypes.GenerateContentConfig(system_instruction=system, temperature=0.3))
+            config=gtypes.GenerateContentConfig(system_instruction=system, temperature=temperature))
         async for chunk in stream:
             if getattr(chunk, "text", None):
                 yield chunk.text
@@ -325,13 +328,14 @@ async def stream_markdown(system: str, prompt: str, *, session_hint: str = "apti
 
     # Any provider without a streaming path still works -- it just arrives in one piece.
     result = await generate_markdown(system, prompt, session_hint=session_hint,
-                                     prefer_fast=prefer_fast)
+                                     prefer_fast=prefer_fast, temperature=temperature)
     yield result["text"]
     yield ("__done__", result["model"], result["provider"])
 
 
 async def generate_markdown(system: str, prompt: str, *, session_hint: str = "aptimizer",
-                            prefer_fast: bool = False) -> dict:
+                            prefer_fast: bool = False,
+                            temperature: float = 0.15) -> dict:
     """Run one prompt and return {"text", "model", "provider"}.
 
     `system` sets the role and output shape; `prompt` carries the data. Raises
@@ -361,14 +365,16 @@ async def generate_markdown(system: str, prompt: str, *, session_hint: str = "ap
         env, base = (("XAI_API_KEY", XAI_BASE_URL) if name == "grok"
                      else ("GROQ_API_KEY", GROQ_BASE_URL))
         return await _openai_compatible_generate(
-            os.environ[env].strip(), base, chain, system, prompt, name)
+            os.environ[env].strip(), base, chain, system, prompt, name,
+            temperature=temperature)
 
     if name == "gemini":
         try:
             import google.genai  # noqa: F401
         except ImportError as exc:  # pragma: no cover - dependency is in requirements.txt
             raise AIFailed("google-genai is not installed. Run: pip install google-genai") from exc
-        return await _gemini_generate(os.environ["GEMINI_API_KEY"].strip(), chain, system, prompt)
+        return await _gemini_generate(os.environ["GEMINI_API_KEY"].strip(), chain, system, prompt,
+                                      temperature=temperature)
 
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -498,9 +504,14 @@ YOUR JOB:
   uses, but always caveat that the user must re-run the actual calculation
   engine to get an authoritative number -- you are explaining, not recalculating.
 - Help users navigate the app when asked "how do I..." questions.
-- If asked about something outside the current project's computed data (e.g.
-  general code knowledge not tied to this project), answer from general IS/NBC
-  knowledge but clearly flag that it's general guidance, not project-specific.
+- If code_extracts are present, ground every code reference in them. Do not
+  supply clause numbers, limits, table values or formulas from memory. If the
+  extracts do not cover the question, say so and suggest the user search the
+  code library directly -- an unanswered question is better than an answer the
+  reader cannot verify.
+- If no code_extracts are present and the question is about a general IS/NBC
+  provision not tied to this project, say you do not have the code text loaded
+  and direct the user to the Codes tab where they can search the corpus.
 
 RESPONSE MODES:
 1. "WHY DID X HAPPEN" QUESTIONS
@@ -525,9 +536,12 @@ RESPONSE MODES:
    calculation, if relevant. Don't give a textbook lecture -- give the
    working definition an engineer needs to interpret their own output.
 4. WHAT-IF / ADVISORY QUESTIONS
-   Reason from the same formulas the engine uses to give a directional answer,
-   but explicitly state the user must re-run the calculation engine for an
-   authoritative number.
+   If "what_if_analysis" is present in the project state, report the EXACT
+   deltas computed by the engine (baseline vs hypothetical, metric differences,
+   percentage changes, and any compliance check status flips).
+   If "what_if_analysis" is absent, reason from the same formulas the engine
+   uses to give a directional answer, but explicitly state the user must re-run
+   the calculation engine for an authoritative number.
 5. NAVIGATION / HOW-TO QUESTIONS
    Give direct, short instructions for using the app's features.
 6. COMPARISON ACROSS REVISIONS
@@ -572,5 +586,33 @@ derivations, prose for explanations, and short definitions for terminology.""",
         "**Recommendation** (2-3 sentences, and state plainly if the choice depends on a "
         "priority only the client can set). Ignore metrics that are identical. Under 450 "
         "words."
+    ),
+    # Deliberately not built on _BASE. _BASE tells the model to "reference the relevant IS
+    # codes where they apply", which is exactly the instruction this prompt exists to
+    # revoke: here the codes are supplied as retrieved text and memory is not a source.
+    "codes": (
+        "You are a senior Indian civil engineer answering a question about a code "
+        "provision. The extracts below were retrieved from the code documents this "
+        "deployment holds, and they are the only source you may answer from -- you have "
+        "no other access to the codes.\n\n"
+        "RULES:\n"
+        "- Answer only from the supplied extracts. Never supply a clause number, a limit, "
+        "a table value or a formula from memory, however certain it feels.\n"
+        "- Cite the code and the clause for every statement, written the way the extract "
+        "gives them (for example 'IS 456:2000 Cl. 23.2.1').\n"
+        "- If the extracts do not settle the question, say so plainly and say what is "
+        "missing. An unanswered question is a usable answer; a filled gap is not, because "
+        "the reader cannot tell the two apart.\n"
+        "- Quote the wording of the clause wherever the wording is what decides the answer.\n"
+        "- Never compute a design value. This application computes them and owns them: "
+        "engineering.py for loads, seismic, foundations and mix design, takeoff.py for "
+        "quantities and cost, parking.py for parking demand. Name the module that produces "
+        "the number and send the reader to it instead of working it out here.\n"
+        "- Where a project's computed state is supplied alongside the extracts, take the "
+        "project's own figures from that state and what the code requires from the "
+        "extracts. Never state a project figure that is not in the supplied data.\n\n"
+        "Write in markdown, concise and technical, no preamble. Never use LaTeX: write "
+        "formulas as plain text an engineer would write by hand -- V = Ah x W, "
+        "sqrt(55.7), d^2."
     ),
 }

@@ -13,9 +13,19 @@ So every citation-shaped string in a reply is extracted and looked up. Three out
 Deleting the bad ones silently would be worse, not better: the reader would see a clean
 answer with a hole in it. They are returned alongside the text so the UI can mark them,
 and the reader can see exactly which reference to check before relying on it.
+
+The registry has two tiers. The 62 curated entries are the ones that ship, and they are a
+list of clause numbers and topics, not of code text. Whatever corpus the operator has
+loaded is the second: codesearch knows every clause it holds the text of, and a citation to
+one of those is as real as a citation gets -- often it is the app quoting a passage it just
+retrieved, and flagging that would discredit the flag on the citations that matter. So the
+corpus tier widens what resolves and narrows nothing; with no index built the behaviour is
+exactly what it was. An unresolved citation is still reported rather than stripped, for the
+reason above and one more: neither tier is the whole of any code, so "not found here" is a
+prompt to check, never a finding that the clause does not exist.
 """
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set, Tuple
 
 import iscodes as C
 
@@ -30,8 +40,20 @@ _NBC = re.compile(r"\bNBC\b[^.,;)\n]{0,40}?Part\s*(\d+)", re.IGNORECASE)
 # lettered ("Annex E") and missing those made real registry entries fail their own
 # check. The single-letter alternative is case-sensitive via (?-i:) -- under
 # IGNORECASE it would otherwise match the "o" in "Table of contents".
-_CLAUSE = re.compile(r"\b(?:Cl\.?|Clause|Table|Fig\.?|Figure|Annex(?:ure)?)\s*"
-                     r"([A-Z]?[\d]+(?:\.\d+)*[a-z]?|(?-i:[A-Z])\b)", re.IGNORECASE)
+_CLAUSE = re.compile(
+    r"\b(?:Cl\.?|Clause|Table|Fig\.?|Figure|Annex(?:ure)?)\s*"
+    r"("
+    r"[A-Z]?[\d]+(?:\.\d+)*[a-z]?"        # numeric: 7.6.2, 26.5.1.1a
+    r"(?:\s*\([a-z]\))?"                    # optional parenthesized sub-item: (a)
+    r"(?:\s+Note\s+\d+)?"                   # optional note suffix: Note 2
+    r"|(?-i:[A-Z])(?:\.\d+(?:\.\d+)*)?"    # lettered annex: E, E.1, E.1.2
+    r")", re.IGNORECASE)
+
+# codesearch chunks the corpus on the same designations this guard parses, so the two can
+# never drift apart. The private names keep working; these are the ones to import.
+STANDARD_RE = _STANDARD
+NBC_RE = _NBC
+CLAUSE_RE = _CLAUSE
 
 
 def _base(code: str) -> str:
@@ -49,11 +71,43 @@ def _base(code: str) -> str:
     return re.sub(r"p\d+$", "", code)
 
 
+def _corpus_tier() -> Tuple[Set[str], Set[Tuple[str, str]]]:
+    """The codes and (code, clause) pairs the built clause index can vouch for.
+
+    codesearch imports this module, so the import has to happen here rather than at the top
+    of the file: at import time the cycle leaves one of the two half-built. Every failure is
+    swallowed and answered with empty sets -- no index, no numpy, an index written by some
+    later version of the builder, anything. citations is imported by aptcontext and by the
+    server on every request, and a retrieval feature the operator never configured must not
+    be the reason the app fails to start.
+
+    The index itself is cached in a module global on codesearch's side, so this costs a walk
+    of an already-loaded set rather than a read from disk.
+    """
+    try:
+        import codesearch
+        pairs = codesearch.clause_pairs()
+    except Exception:
+        return set(), set()
+    if not pairs:
+        return set(), set()
+    # clause_pairs() already files every chunk under the part-less code as well, so the
+    # pairs go in as they come. The codes fall out of them, because a citation to a standard
+    # that exists only in the corpus should read as a clause we cannot confirm, not as a
+    # standard nobody has heard of.
+    codes = {code for code, _clause in pairs}
+    return codes | {_base(c) for c in codes}, pairs
+
+
 def _registry() -> Dict[str, Any]:
     """Everything the app can vouch for, indexed for lookup.
 
     Indexed twice: by the exact code and by the code with its part number stripped, so a
     citation that omits the part still resolves against the part the registry holds.
+
+    The curated entries are joined by whatever the clause index holds, which only ever adds
+    to what resolves. `clauses` stays curated: nothing reads it, and the pair set is what
+    verify() decides on.
     """
     codes, clauses, pairs = set(), set(), set()
     for entry in C.CLAUSES.values():
@@ -72,7 +126,9 @@ def _registry() -> Dict[str, Any]:
                     n = _norm_code(m.group(0))
                     codes.add(n)
                     codes.add(_base(n))
-    return {"codes": codes, "clauses": clauses, "pairs": pairs}
+    corpus_codes, corpus_pairs = _corpus_tier()
+    return {"codes": codes | corpus_codes, "clauses": clauses,
+            "pairs": pairs | corpus_pairs}
 
 
 def _norm_code(text: str) -> str:
@@ -89,7 +145,15 @@ def _norm_code(text: str) -> str:
 
 def _norm_clause(text: str) -> str:
     m = _CLAUSE.search(text or "")
-    return m.group(1).lower().rstrip(".") if m else ""
+    if not m:
+        return ""
+    raw = m.group(1).lower().rstrip(".")
+    # Strip parenthesized sub-item and note suffix for registry lookup,
+    # so "26.5.1.1(a)" resolves against "26.5.1.1" and "table 5 note 2"
+    # resolves against "5".
+    raw = re.sub(r"\s*\([a-z]\)$", "", raw)
+    raw = re.sub(r"\s+note\s+\d+$", "", raw)
+    return raw
 
 
 def _all_clauses(text: str) -> List[str]:
@@ -141,6 +205,54 @@ def verify(text: str) -> Dict[str, Any]:
         "unverified": unverified,
         "checked": len(resolved) + len(code_only) + len(unverified),
     }
+
+
+_NUMBER = re.compile(r"\b(\d+(?:\.\d+)?)\b(?:\s*(mm|m|kN|MPa|Pa|kg|l|%|°C|N/mm|s))?")
+
+
+def verify_with_extracts(text: str, extracts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extended verify() that also checks numerical claims against extract text.
+
+    A number stated next to a citation should appear in the extract that citation
+    came from. A number the extract does not contain is flagged as unconfirmed_value
+    rather than silently passed -- the reader can then check the source.
+    """
+    base_result = verify(text)
+    if not extracts:
+        return {**base_result, "unconfirmed_values": []}
+
+    # Build a lookup: code_norm -> set of all numbers in that code's extracts
+    extract_numbers: Dict[str, Set[str]] = {}
+    for ex in extracts:
+        code = _norm_code(ex.get("code", ""))
+        nums = extract_numbers.setdefault(code, set())
+        for m in _NUMBER.finditer(ex.get("text", "")):
+            nums.add(m.group(1))
+        base_code = _base(code)
+        if base_code != code:
+            base_nums = extract_numbers.setdefault(base_code, set())
+            base_nums.update(nums)
+
+    # Check each citation's surrounding numbers against the extract
+    unconfirmed = []
+    for cite in extract(text):
+        code = cite["code"]
+        pos = text.lower().find(cite["raw"].lower())
+        if pos < 0:
+            continue
+        # Check the text immediately following the citation
+        window = text[pos + len(cite["raw"]): pos + len(cite["raw"]) + 100]
+        code_nums = extract_numbers.get(code, set()) | extract_numbers.get(_base(code), set())
+        if not code_nums:
+            continue
+        for nm in _NUMBER.finditer(window):
+            val = nm.group(1)
+            # Skip single digit numbers that might be punctuation/enumerations unless in code_nums
+            if val not in code_nums:
+                unconfirmed.append({"citation": cite["raw"],
+                                    "value": nm.group(0).strip()})
+
+    return {**base_result, "unconfirmed_values": unconfirmed}
 
 
 def registry_context(limit: int = 0) -> List[Dict[str, str]]:

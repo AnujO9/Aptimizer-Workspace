@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { Metric, NumField, Section, TextField } from "../components/Field";
 import OptimiserPanel from "../components/OptimiserPanel";
@@ -58,6 +58,22 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
       setFloorStale(!!data.stale);
       setFloorValidation(data.validation || {});
       if (regenerate) toast.success(`Floor ${floor} layout regenerated`);
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    } finally {
+      setFloorLoading(false);
+    }
+  };
+
+  const fetchAiFloorLayout = async () => {
+    if (!t) return;
+    setFloorLoading(true);
+    try {
+      const { data } = await api.post(`/projects/${projectId}/towers/${t.id}/ai-floor-layout`, { floor, regenerate: true, use_ai: true });
+      setProject((prev) => ({ ...prev, towers: data.towers }));
+      setFloorStale(false);
+      setFloorValidation(data.validation || {});
+      toast.success(`AI designed floor ${floor} layout successfully!`);
     } catch (e) {
       toast.error(apiError(e.response?.data?.detail));
     } finally {
@@ -383,9 +399,13 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
             )}
             {!readOnly && (
               <>
+                <Button size="sm" variant="default" className="h-7 rounded-sm text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-xs" data-testid="ai-generate-layout-button"
+                  disabled={floorLoading} onClick={fetchAiFloorLayout}>
+                  <Sparkles className={`h-3 w-3 mr-1 ${floorLoading ? "animate-spin" : ""}`} /> AI Generate
+                </Button>
                 <Button size="sm" variant="outline" className="h-7 rounded-sm text-xs" data-testid="regenerate-layout-button"
                   disabled={floorLoading} onClick={() => fetchFloorLayout(true)}>
-                  <RefreshCw className={`h-3 w-3 mr-1 ${floorLoading ? "animate-spin" : ""}`} /> Regenerate
+                  <RefreshCw className={`h-3 w-3 mr-1 ${floorLoading ? "animate-spin" : ""}`} /> Algorithmic
                 </Button>
                 <Button size="sm" variant="outline" className="h-7 rounded-sm text-xs" data-testid="add-room-button"
                   onClick={() => setRooms([...floorRooms, { id: uid(), name: "New room", type: "bedroom", x: 0, y: 0, w: 3, h: 3 }])}>

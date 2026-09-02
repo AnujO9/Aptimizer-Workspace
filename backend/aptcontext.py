@@ -11,6 +11,12 @@ message and bury the figures that answer the question.
 ROUND ON THE WAY IN. A base shear of 1234.56789012 kN spends tokens on digits that are
 noise, and invites the model to quote a precision the engine never claimed.
 
+Retrieved clause text is the one exception to the first rule, and it earns it. The
+registry hands the assistant clause NUMBERS; the alternative to also handing it the
+passage is an assistant that reconstructs what the clause says from memory, fluently and
+wrongly. Verbatim code text is the only raw text here worth its tokens, and it is capped
+so that it stays a citation rather than becoming the context.
+
 The builders here are also the ones the single-shot AI reports use, so the assistant and
 the reports can never describe the same project differently.
 """
@@ -278,8 +284,57 @@ def _clauses_in_play(eng: Dict[str, Any]) -> List[Dict[str, str]]:
     return rows or citelib.registry_context()
 
 
+# A retrieved passage has no natural length -- one clause is a sentence, the next is a
+# page of a load table -- and the rest of this context already runs to several kB. Left
+# unbounded, one quoted extract would dwarf the project state the assistant is actually
+# being asked about, so all of them share this budget and the ones that do not fit are
+# dropped.
+EXTRACT_CHARS = 4000
+
+
+def _cut(text: str, limit: int) -> str:
+    """Trim to `limit`, backing up to the last sentence, line or word break.
+
+    Cutting mid-word reads as corruption rather than as an ellipsis; the caller marks the
+    result truncated so the assistant knows the clause does not end there."""
+    head = text[:limit]
+    for sep, keep in ((". ", 1), ("\n", 0), (" ", 0)):
+        i = head.rfind(sep)
+        if i > limit // 2:                       # a boundary near the start is not one
+            return head[:i + keep].rstrip()
+    return head.rstrip()
+
+
+def _extracts(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """codesearch hits as quotable passages: the code, the clause, the text, the score.
+
+    The component scores, the chunk ids and the merge bookkeeping stay behind -- they are
+    how retrieval decided, and a conversation can do nothing with them. Best-first until
+    the budget is spent, and the first one that overruns ends the list: half a clause
+    with more clauses after it invites the model to read across the seam."""
+    out: List[Dict[str, Any]] = []
+    spent = 0
+    for h in sorted(hits, key=lambda x: x.get("score") or 0, reverse=True):
+        text = (h.get("text") or "").strip()
+        room = EXTRACT_CHARS - spent
+        if not text or room <= 0:
+            break
+        row = {"code": h.get("code"), "clause": h.get("clause"),
+               "heading": h.get("heading"), "score": h.get("score")}
+        if len(text) <= room:
+            spent += len(text)
+            out.append(_compact(_r({**row, "text": text})))
+            continue
+        text = _cut(text, room)
+        if text:
+            out.append(_compact(_r({**row, "text": text, "truncated": True})))
+        break
+    return out
+
+
 def build(proj: Dict[str, Any], an: Dict[str, Any], eng: Dict[str, Any],
-          revision_diff: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+          revision_diff: Optional[Dict[str, Any]] = None,
+          code_extracts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The whole project state APT is given before each message."""
     ctx: Dict[str, Any] = {
         "project": project_summary(proj, an),
@@ -296,7 +351,11 @@ def build(proj: Dict[str, Any], an: Dict[str, Any], eng: Dict[str, Any],
         # the assistant to say so rather than reach for a clause it was not given.
         "clause_registry": _clauses_in_play(eng),
     }
-    for key, value in (("gis", gis_summary(proj)),
+    # Complementary to clause_registry above, not a replacement for it: the registry is
+    # the curated list to cite FROM, these are the passages the corpus actually returned
+    # for this question, and the prompt tells them apart.
+    for key, value in (("code_extracts", _extracts(code_extracts or [])),
+                       ("gis", gis_summary(proj)),
                        ("finance", finance_summary(proj, an)),
                        ("programme", programme_summary(proj, an)),
                        ("revision_diff", revision_diff)):

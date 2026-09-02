@@ -1,5 +1,6 @@
 import { Metric, NumField, Section } from "../components/Field";
 import FarPanel from "../components/FarPanel";
+import AreaDerivationPanel from "../components/AreaDerivationPanel";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { int, num } from "../lib/format";
 
@@ -29,7 +30,8 @@ export default function CalculationsModule({ project, analysis, update, readOnly
           <Metric label="Max height" value={num(a?.max_height_m, 2)} unit="m" testid="calc-height" />
           <Metric label="Balcony area" value={num(a?.towers?.reduce((s, t) => s + t.balcony_sqm, 0), 1)} unit="m²" testid="calc-balcony" />
         </div>
-        <div className="mt-3">
+        <div className="mt-3 space-y-2">
+          <AreaDerivationPanel derivation={analysis?.area_derivation} testid="calc-area-panel" />
           <FarPanel derivation={analysis?.far_derivation} testid="calc-far-panel" />
         </div>
       </Section>

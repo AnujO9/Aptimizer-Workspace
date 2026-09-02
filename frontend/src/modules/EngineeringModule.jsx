@@ -6,6 +6,7 @@ import { ClauseChip, LibraryContext } from "../components/Clause";
 import { Metric, NumField, Section } from "../components/Field";
 import { AiPanel } from "../components/AiPanel";
 import UtilitiesModule from "./UtilitiesModule";
+import AreaDerivationPanel from "../components/AreaDerivationPanel";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
@@ -16,24 +17,21 @@ import { Progress } from "../components/ui/progress";
 import { num } from "../lib/format";
 
 const TABS = [
-  ["loads", "1 · Structural Loads"],
-  ["seismic", "2 · Seismic"],
-  ["foundation", "3 · Foundation"],
-  ["mix", "4 · Mix Design"],
-  ["water", "5 · Water"],
-  ["storm", "6 · Storm & RWH"],
+  ["grid", "1 · Column Grid"],
+  ["loads", "2 · Structural Loads"],
+  ["seismic", "3 · Seismic"],
+  ["foundation", "4 · Foundation"],
+  ["mix", "5 · Mix Design"],
+  ["fire", "6 · Fire Safety"],
   ["parking_nbc", "7 · Parking (NBC)"],
-  ["fire", "8 · Fire Safety"],
-  ["accessibility", "9 · Accessibility"],
-  ["library", "10 · IS Code Library"],
-  ["green", "11 · Green Rating"],
-  ["grid", "12 · Column Grid"],
-  // Utilities sizes the same water, tank, STP and RWH figures the water and storm modules
-  // above compute. Keeping it in a separate sidebar entry is what once let the two show
-  // different sump sizes for one project, so it belongs in this tab strip.
-  ["utilities", "13 · Utilities Sizing"],
-  ["carbon", "14 · Embodied Carbon"],
-  ["trees", "15 · Plantation Plan"],
+  ["accessibility", "8 · Accessibility"],
+  ["water", "9 · Water"],
+  ["storm", "10 · Storm & RWH"],
+  ["utilities", "11 · Utilities Sizing"],
+  ["carbon", "12 · Embodied Carbon"],
+  ["green", "13 · Green Rating"],
+  ["trees", "14 · Plantation Plan"],
+  ["library", "15 · IS Code Library"],
 ];
 
 const INPUTS = {
@@ -116,6 +114,81 @@ const ChecksList = ({ module }) => (
   </ul>
 );
 
+/** Full-text search over the indexed clause corpus, next to the topic table above it.
+ *
+ *  Separate from the /iscodes table on purpose: that one lists the registry rows the app
+ *  computes against, this one searches the actual clause text. When the index is not
+ *  built there is no search box at all — a box that cannot answer is worse than a stated
+ *  reason.
+ */
+const ClauseSearch = () => {
+  const [index, setIndex] = useState(undefined);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState([]);
+  const [degraded, setDegraded] = useState(false);
+
+  useEffect(() => {
+    api.get("/codes/index").then(({ data }) => setIndex(data)).catch(() => setIndex(null));
+  }, []);
+
+  useEffect(() => {
+    if (!index?.available || !q.trim()) { setHits([]); return; }
+    const t = setTimeout(() => {
+      api.get(`/codes/search?q=${encodeURIComponent(q)}`)
+        .then(({ data }) => { setHits(data.results || []); setDegraded(!!data.degraded); })
+        .catch(() => {});
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q, index]);
+
+  if (index === undefined) return null;
+  if (!index?.available) {
+    return (
+      <div className="border border-amber-200 bg-amber-50 rounded-sm px-3 py-2 text-xs text-amber-800"
+        data-testid="clause-search-unavailable">
+        Clause-text search is unavailable: {index?.reason || "the clause index is not loaded."}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2" data-testid="clause-search">
+      <div className="relative">
+        <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-slate-400" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search the clause text itself…"
+          className="pl-9 rounded-sm"
+          data-testid="clause-search-input"
+        />
+      </div>
+      {(degraded || index.degraded) && (
+        <p className="text-[11px] text-slate-500" data-testid="clause-search-degraded">
+          Keyword-only matching — no embedding key is configured, so results are ranked on
+          wording rather than meaning.
+        </p>
+      )}
+      {hits.map((h) => (
+        <details key={h.chunk_id} className="border border-slate-200 rounded-sm px-3 py-2"
+          data-testid={`clause-hit-${String(h.chunk_id).replace(/[^a-z0-9]/gi, "-").toLowerCase()}`}>
+          <summary className="cursor-pointer flex items-baseline gap-2">
+            <span className="font-mono text-xs text-slate-900">{h.code} · {h.clause}</span>
+            <span className="text-sm text-slate-700 flex-1 min-w-0 truncate">{h.heading}</span>
+            <span className="text-[10px] font-mono text-slate-400 shrink-0">{num(h.score, 2)}</span>
+          </summary>
+          <p className="text-xs text-slate-600 whitespace-pre-wrap mt-2">{h.text}</p>
+        </details>
+      ))}
+      {!!q.trim() && !hits.length && (
+        <p className="text-sm text-slate-500" data-testid="clause-search-empty">
+          No clause text matches “{q}”.
+        </p>
+      )}
+    </div>
+  );
+};
+
 const CodeLibrary = ({ query, setQuery, focusId, clearFocus }) => {
   const [entries, setEntries] = useState([]);
   useEffect(() => {
@@ -158,6 +231,10 @@ const CodeLibrary = ({ query, setQuery, focusId, clearFocus }) => {
         </TableBody>
       </Table>
       {!entries.length && <p className="text-sm text-slate-500" data-testid="code-library-empty">No entries match “{query}”.</p>}
+      <div className="pt-3 border-t border-slate-200 space-y-2">
+        <h4 className="text-xs uppercase tracking-wide text-slate-500">Clause text search</h4>
+        <ClauseSearch />
+      </div>
     </div>
   );
 };
@@ -223,7 +300,7 @@ function BeamPlan({ layout }) {
 
 export default function EngineeringModule({ project, analysis, update, readOnly, projectId, setProject }) {
   const [eng, setEng] = useState(null);
-  const [tab, setTab] = useState("loads");
+  const [tab, setTab] = useState("grid");
   const [libQuery, setLibQuery] = useState("");
   const [libFocus, setLibFocus] = useState("");
   const [libOpen, setLibOpen] = useState(false);
@@ -413,6 +490,10 @@ export default function EngineeringModule({ project, analysis, update, readOnly,
               </TableBody>
             </Table>
           </Section>
+        )}
+
+        {analysis?.area_derivation && (
+          <AreaDerivationPanel derivation={analysis.area_derivation} testid="eng-area-panel" />
         )}
 
         <div className="flex gap-1.5 flex-wrap" data-testid="engineering-tabs">

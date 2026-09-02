@@ -627,6 +627,170 @@ def far_derivation(project, areas):
     }
 
 
+def area_derivation(project, areas):
+    """Detailed step-by-step arithmetic derivation of Carpet, Built-up and Super Built-up areas.
+
+    Explains service core empirical multipliers, wall thickness allowance, common area loading,
+    society amenities add-on, and reconciles the implied multiplier for easy manual verification.
+    """
+    cfg = project.get("config") or {}
+    wall_factor = float(cfg.get("wall_thickness_factor") or 0.10)
+    loading = float(cfg.get("common_area_loading") or 0.25)
+    society_amenities = project.get("society_amenities") or []
+    society_amenities_sqm = float(areas.get("society_amenities_sqm") or 0)
+
+    plot_sqm = float(areas.get("plot_area_sqm") or 0)
+    carpet_sqm = float(areas.get("carpet_area_sqm") or 0)
+    builtup_sqm = float(areas.get("builtup_area_sqm") or 0)
+    super_builtup_sqm = float(areas.get("super_builtup_area_sqm") or 0)
+
+    towers_raw = project.get("towers") or []
+    towers_derived = areas.get("towers") or []
+
+    tower_breakdowns = []
+    total_corridor_sqm = 0.0
+    total_stairs_sqm = 0.0
+    total_lifts_sqm = 0.0
+    total_walls_sqm = 0.0
+
+    for t_raw in towers_raw:
+        t_id = t_raw.get("id")
+        t_der = next((td for td in towers_derived if td.get("id") == t_id), {})
+        floors = int(t_der.get("floors") or 0)
+
+        # Unit breakdown
+        units = t_raw.get("units") or []
+        carpet_floor = sum(float(u.get("carpet_area") or 0) * int(u.get("count") or 0) for u in units)
+        balcony_floor = sum(float(u.get("balcony_area") or 0) * int(u.get("count") or 0) for u in units)
+
+        # Service core components
+        corridor_w = float(t_raw.get("corridor_width") or 0)
+        corridor_l = float(t_raw.get("corridor_length") or 0)
+        corridor_floor = corridor_w * corridor_l
+
+        stairs = t_raw.get("staircases") or []
+        stair_floor = sum(float(s.get("width") or 0) * float(s.get("width") or 0) * 2.6 * int(s.get("count") or 0) for s in stairs)
+
+        lifts = t_raw.get("lifts") or []
+        lift_floor = sum(int(l.get("count") or 0) * 4.5 for l in lifts)
+
+        core_floor = corridor_floor + stair_floor + lift_floor
+        walls_floor = (carpet_floor + balcony_floor) * wall_factor
+        builtup_floor = (carpet_floor + balcony_floor) + walls_floor + core_floor
+
+        t_builtup = builtup_floor * floors
+        t_super = t_builtup * (1 + loading)
+
+        total_corridor_sqm += corridor_floor * floors
+        total_stairs_sqm += stair_floor * floors
+        total_lifts_sqm += lift_floor * floors
+        total_walls_sqm += walls_floor * floors
+
+        tower_breakdowns.append({
+            "id": t_id,
+            "name": t_der.get("name") or t_raw.get("name"),
+            "floors": floors,
+            "units_per_floor": t_der.get("units_per_floor"),
+            "total_units": t_der.get("total_units"),
+            "carpet_per_floor_sqm": round(carpet_floor, 2),
+            "balcony_per_floor_sqm": round(balcony_floor, 2),
+            "service_core": {
+                "corridor_sqm": round(corridor_floor, 2),
+                "stair_sqm": round(stair_floor, 2),
+                "lift_sqm": round(lift_floor, 2),
+                "total_floor_sqm": round(core_floor, 2),
+                "total_tower_sqm": round(core_floor * floors, 2),
+                "stair_formula": "stair_count × (stair_width)² × 2.6",
+                "lift_formula": "lift_count × 4.5 m² per shaft",
+                "corridor_formula": f"{corridor_w} m width × {corridor_l} m length",
+            },
+            "wall_allowance_floor_sqm": round(walls_floor, 2),
+            "builtup_per_floor_sqm": round(builtup_floor, 2),
+            "builtup_sqm": round(t_builtup, 2),
+            "super_builtup_sqm": round(t_super, 2),
+            "loading_factor": loading,
+            "loading_added_sqm": round(t_super - t_builtup, 2),
+        })
+
+    towers_builtup_total = sum(t["builtup_sqm"] for t in tower_breakdowns)
+    towers_super_total = sum(t["super_builtup_sqm"] for t in tower_breakdowns)
+    implied_multiplier = round(super_builtup_sqm / builtup_sqm, 4) if builtup_sqm else 1.0
+
+    return {
+        "summary": {
+            "plot_area_sqm": plot_sqm,
+            "carpet_area_sqm": carpet_sqm,
+            "builtup_area_sqm": builtup_sqm,
+            "super_builtup_area_sqm": super_builtup_sqm,
+            "wall_allowance_pct": round(wall_factor * 100, 1),
+            "common_area_loading_pct": round(loading * 100, 1),
+            "society_amenities_sqm": society_amenities_sqm,
+            "implied_multiplier": implied_multiplier,
+            "implied_loading_pct": round((implied_multiplier - 1.0) * 100, 2),
+        },
+        "step_by_step_formulas": [
+            {
+                "step": 1,
+                "title": "Carpet Area",
+                "formula": "Sum of internal usable room area across all apartment units",
+                "explanation": "Net usable floor area of an apartment excluding walls, shafts and balconies (RERA definition).",
+                "result": f"{carpet_sqm:,.2f} m²",
+            },
+            {
+                "step": 2,
+                "title": "Wall Thickness Allowance",
+                "formula": f"(Carpet Area + Balcony Area) × {wall_factor:.0%}",
+                "explanation": f"Accounts for internal partition and external perimeter brick/block walls ({wall_factor:.0%} of floor plate).",
+                "result": f"+{total_walls_sqm:,.2f} m²",
+            },
+            {
+                "step": 3,
+                "title": "Service Core per Floor",
+                "formula": "Corridor (W × L) + Staircases (N × W² × 2.6) + Lifts (N × 4.5 m²)",
+                "explanation": "Vertical and horizontal circulation on every typical floor. Staircase multiplier 2.6 covers waist slab, landings and mid-landings; 4.5 m² covers lift shaft + wall enclosure.",
+                "result": f"+{sum(t['service_core']['total_tower_sqm'] for t in tower_breakdowns):,.2f} m²",
+            },
+            {
+                "step": 4,
+                "title": "Built-up Area (Plinth Area)",
+                "formula": "[(Carpet + Balcony) × 1.10 + Service Core] × Floors",
+                "explanation": "Total structural slab area constructed across all floors of all towers.",
+                "result": f"= {builtup_sqm:,.2f} m²",
+            },
+            {
+                "step": 5,
+                "title": "Common Area Loading (Tower Level)",
+                "formula": f"Tower Built-up × (1 + {loading:.0%})",
+                "explanation": f"Commercial loading factor of {loading:.0%} applied to built-up area for common corridors, entrance lobbies, and tower services.",
+                "result": f"= {towers_super_total:,.2f} m² (across towers)",
+            },
+            {
+                "step": 6,
+                "title": "Society Amenities Add-On (Clubhouse, Pool, etc.)",
+                "formula": "Sum of stand-alone society amenities",
+                "explanation": "Shared community structures (Clubhouse, Gym, Swimming pool, etc.) that belong to all residents are added to the saleable pool.",
+                "result": f"+{society_amenities_sqm:,.2f} m²",
+            },
+            {
+                "step": 7,
+                "title": "Total Super Built-up Area (Saleable Area)",
+                "formula": "Towers Super Built-up + Society Amenities",
+                "explanation": f"{towers_super_total:,.2f} m² + {society_amenities_sqm:,.2f} m²",
+                "result": f"= {super_builtup_sqm:,.2f} m²",
+            },
+            {
+                "step": 8,
+                "title": "Implied / Effective Multiplier Reconciled",
+                "formula": f"Total Super Built-up ÷ Total Built-up = {super_builtup_sqm:,.2f} ÷ {builtup_sqm:,.2f}",
+                "explanation": f"Notice this is {implied_multiplier:g}× (or {(implied_multiplier - 1.0) * 100:.2f}% total loading) instead of exactly {loading * 100:g}%. The difference ({((implied_multiplier - 1.0) - loading) * 100:.2f}%) is precisely the society amenities ({society_amenities_sqm} m²) distributed over the built-up area!",
+                "result": f"{implied_multiplier:g}×",
+            },
+        ],
+        "towers": tower_breakdowns,
+        "society_amenities": society_amenities,
+    }
+
+
 def analyse(project):
     areas = area_metrics(project)
     park = parking_metrics(project, areas)
@@ -653,4 +817,5 @@ def analyse(project):
         },
         "utilities": util, "compliance": comp,
         "far_derivation": far_derivation(project, areas),
+        "area_derivation": area_derivation(project, areas),
     }

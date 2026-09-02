@@ -43,6 +43,35 @@ function CitationFlags({ message }) {
   );
 }
 
+/** The clause passages the answer was actually built from, collapsed.
+ *
+ *  The opposite job to CitationFlags: that one names what could NOT be checked, this one
+ *  opens a citation onto the text it came from. A message with no retrieved passages
+ *  renders nothing at all — an empty "Sources" header would imply the answer had none to
+ *  show rather than that none were retrieved.
+ */
+function CodeSources({ message }) {
+  const sources = message.code_sources || [];
+  if (!sources.length) return null;
+  return (
+    <div className="mt-2 space-y-1" data-testid="apt-code-sources">
+      <p className="text-[10px] uppercase tracking-wider text-slate-400">
+        Clause text used ({sources.length})
+      </p>
+      {sources.map((s) => (
+        <details key={s.chunk_id} className="border border-slate-200 rounded-sm px-2 py-1"
+          data-testid={`apt-code-source-${String(s.chunk_id).replace(/[^a-z0-9]/gi, "-").toLowerCase()}`}>
+          <summary className="cursor-pointer flex items-baseline gap-1.5">
+            <span className="font-mono text-[11px] text-slate-900">{s.code} · {s.clause}</span>
+            <span className="text-[11px] text-slate-600 flex-1 min-w-0 truncate">{s.heading}</span>
+          </summary>
+          <p className="text-[11px] text-slate-600 whitespace-pre-wrap mt-1.5">{s.text}</p>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function Bubble({ m }) {
   const [copied, setCopied] = useState(false);
   const mine = m.role === "user";
@@ -75,6 +104,7 @@ function Bubble({ m }) {
         {mine ? m.content : <Markdown text={m.content} testid="apt-answer" />}
       </div>
       {!mine && <CitationFlags message={m} />}
+      {!mine && <CodeSources message={m} />}
       {!mine && m.model && (
         <p className="text-[10px] text-slate-400 font-mono mt-1.5">{m.model}</p>
       )}
