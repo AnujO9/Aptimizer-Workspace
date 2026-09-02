@@ -36,28 +36,53 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  if (!rooms.length) return <p className="text-sm text-slate-500">No rooms defined for this floor plate.</p>;
-  const minX = Math.min(...rooms.map((r) => Number(r.x)));
-  const minY = Math.min(...rooms.map((r) => Number(r.y)));
-  const maxX = Math.max(...rooms.map((r) => Number(r.x) + Number(r.w))) + 1;
-  const maxY = Math.max(...rooms.map((r) => Number(r.y) + Number(r.h))) + 1;
+  const validRooms = (Array.isArray(rooms) ? rooms : []).filter((r) => r && typeof r === "object");
+  if (!validRooms.length) {
+    return (
+      <div className="flex items-center justify-center h-[340px] bg-slate-50 border border-slate-200 rounded-sm text-sm text-slate-500">
+        No rooms defined for this floor plate. Click &ldquo;AI Generate&rdquo; or &ldquo;Algorithmic&rdquo; above.
+      </div>
+    );
+  }
+
+  const xs = validRooms.map((r) => (Number.isFinite(Number(r.x)) ? Number(r.x) : 0));
+  const ys = validRooms.map((r) => (Number.isFinite(Number(r.y)) ? Number(r.y) : 0));
+  const x2s = validRooms.map((r) => {
+    const x = Number.isFinite(Number(r.x)) ? Number(r.x) : 0;
+    const w = Number.isFinite(Number(r.w)) ? Number(r.w) : 3;
+    return x + w;
+  });
+  const y2s = validRooms.map((r) => {
+    const y = Number.isFinite(Number(r.y)) ? Number(r.y) : 0;
+    const h = Number.isFinite(Number(r.h)) ? Number(r.h) : 3;
+    return y + h;
+  });
+
+  const minX = xs.length ? Math.min(...xs) : 0;
+  const minY = ys.length ? Math.min(...ys) : 0;
+  const maxX = x2s.length ? Math.max(...x2s) + 1 : 20;
+  const maxY = y2s.length ? Math.max(...y2s) + 1 : 20;
   const scale = 36;
   const padding = 20;
 
-  const svgW = (maxX - minX + 2) * scale + padding * 2;
-  const svgH = (maxY - minY + 2) * scale + padding * 2;
+  const svgW = Math.max((maxX - minX + 2) * scale + padding * 2, 400);
+  const svgH = Math.max((maxY - minY + 2) * scale + padding * 2, 300);
 
   const units = [];
   const seenUnits = new Set();
-  rooms.forEach((r) => {
+  validRooms.forEach((r) => {
     if (r.unit_id == null || seenUnits.has(r.unit_id)) return;
     seenUnits.add(r.unit_id);
-    const inUnit = rooms.filter((x) => x.unit_id === r.unit_id);
-    const ux = Math.min(...inUnit.map((x) => Number(x.x)));
-    const uy = Math.min(...inUnit.map((x) => Number(x.y)));
-    const ux2 = Math.max(...inUnit.map((x) => Number(x.x) + Number(x.w)));
-    const uy2 = Math.max(...inUnit.map((x) => Number(x.y) + Number(x.h)));
-    units.push({ id: r.unit_id, type: r.unit_type, index: r.unit_index, x: ux, y: uy, w: ux2 - ux, h: uy2 - uy });
+    const inUnit = validRooms.filter((x) => x.unit_id === r.unit_id);
+    const uxs = inUnit.map((x) => (Number.isFinite(Number(x.x)) ? Number(x.x) : 0));
+    const uys = inUnit.map((x) => (Number.isFinite(Number(x.y)) ? Number(x.y) : 0));
+    const ux2s = inUnit.map((x) => (Number.isFinite(Number(x.x)) ? Number(x.x) : 0) + (Number.isFinite(Number(x.w)) ? Number(x.w) : 3));
+    const uy2s = inUnit.map((x) => (Number.isFinite(Number(x.y)) ? Number(x.y) : 0) + (Number.isFinite(Number(x.h)) ? Number(x.h) : 3));
+    const ux = Math.min(...uxs);
+    const uy = Math.min(...uys);
+    const ux2 = Math.max(...ux2s);
+    const uy2 = Math.max(...uy2s);
+    units.push({ id: r.unit_id, type: r.unit_type, index: r.unit_index, x: ux, y: uy, w: Math.max(ux2 - ux, 1), h: Math.max(uy2 - uy, 1) });
   });
 
   const handleMouseDown = (e) => {
@@ -92,7 +117,7 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
       data-testid="floor-plate-svg"
     >
       {/* Top Header & Zoom Controls Bar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-white/80 backdrop-blur-xs border-b border-slate-200 text-xs text-slate-600 z-10">
+      <div className="flex items-center justify-between px-3 py-2 bg-white/90 backdrop-blur-xs border-b border-slate-200 text-xs text-slate-600 z-10">
         <span className="flex items-center gap-2 font-medium">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-600" />
           Floor Plate View
@@ -143,7 +168,7 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        className={`relative w-full h-[380px] md:h-[420px] flex items-center justify-center overflow-hidden bg-slate-100/60 ${
+        className={`relative w-full h-[400px] md:h-[460px] flex items-center justify-center overflow-hidden bg-slate-100/70 ${
           isDragging ? "cursor-grabbing" : zoom > 1 ? "cursor-grab" : "cursor-default"
         }`}
       >
@@ -152,12 +177,21 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: "center center",
             transition: isDragging ? "none" : "transform 0.12s ease-out",
+            width: "100%",
+            height: "100%",
           }}
-          className="flex items-center justify-center max-w-full max-h-full"
+          className="flex items-center justify-center p-3"
         >
           <svg
             viewBox={`0 0 ${svgW} ${svgH}`}
-            className="max-h-[340px] md:max-h-[380px] max-w-[95%] w-auto h-auto bg-white rounded border border-slate-300 shadow-sm"
+            style={{
+              width: "100%",
+              height: "100%",
+              maxWidth: `${svgW}px`,
+              maxHeight: "100%",
+            }}
+            preserveAspectRatio="xMidYMid meet"
+            className="bg-white rounded border border-slate-300 shadow-sm"
           >
             <defs>
               <pattern id="arch-grid" width={scale} height={scale} patternUnits="userSpaceOnUse">
@@ -226,13 +260,17 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
             ))}
 
             {/* Rooms */}
-            {rooms.map((r) => {
+            {validRooms.map((r) => {
               const active = r.id === selectedId;
-              const rx = (Number(r.x) - minX) * scale + padding;
-              const ry = (Number(r.y) - minY) * scale + padding;
-              const rw = Number(r.w) * scale;
-              const rh = Number(r.h) * scale;
-              const areaSqm = Number(r.w) * Number(r.h);
+              const xVal = Number.isFinite(Number(r.x)) ? Number(r.x) : 0;
+              const yVal = Number.isFinite(Number(r.y)) ? Number(r.y) : 0;
+              const wVal = Math.max(Number.isFinite(Number(r.w)) ? Number(r.w) : 3, 0.5);
+              const hVal = Math.max(Number.isFinite(Number(r.h)) ? Number(r.h) : 3, 0.5);
+              const rx = (xVal - minX) * scale + padding;
+              const ry = (yVal - minY) * scale + padding;
+              const rw = wVal * scale;
+              const rh = hVal * scale;
+              const areaSqm = wVal * hVal;
               const areaSqft = areaSqm * 10.7639;
               const isBalcony = r.type === "balcony";
               const hasWindow = r.has_window || r.type === "living" || r.type === "bedroom";
