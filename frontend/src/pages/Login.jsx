@@ -15,10 +15,15 @@ import {
   GradientBackground,
 } from "../components/ui/sign-up";
 
+// One card per objective, in the order a project moves through them. Three cards for four
+// objectives meant the estimation-and-programme half had nowhere to sit, so BOQ and cost
+// were folded into the design card — which read as though the design engine priced the
+// building, and left the headline's "to Schedule" with nothing on the page behind it.
 const PILLS = [
   ["SITE INTELLIGENCE", "terrain · environment · suitability"],
-  ["DESIGN ENGINE", "layout · FAR/FSI · BOQ · cost"],
-  ["COMPLIANCE", "NBC / IS rule-based checks"],
+  ["LAYOUT OPTIMISER", "multi-tower · setbacks · FAR/FSI"],
+  ["COMPLIANCE", "NBC / IS clause-level checks"],
+  ["ESTIMATION & PROGRAMME", "quantities · cost · schedule"],
 ];
 
 export default function Login() {
@@ -97,6 +102,9 @@ export default function Login() {
         <div className="relative max-w-lg">
           <Reveal immediate>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] uppercase tracking-[0.2em] text-blue-300/80">
+              {/* Ends where the headline ends. Stopping this chain at Cost while the
+                  headline promised "Site to Schedule" made the page contradict itself in
+                  the space of two lines. */}
               <span>Site</span>
               <ArrowRight className="h-3 w-3" />
               <span>Design</span>
@@ -104,6 +112,8 @@ export default function Login() {
               <span>Compliance</span>
               <ArrowRight className="h-3 w-3" />
               <span>Cost</span>
+              <ArrowRight className="h-3 w-3" />
+              <span>Schedule</span>
             </div>
           </Reveal>
 
@@ -117,12 +127,13 @@ export default function Login() {
 
           <Reveal delay={0.12} immediate>
             <p className="mt-5 text-slate-300 text-base max-w-md">
-              GIS-based site intelligence, automated apartment design and code compliance, quantity
-              take-off and costing — plus scheduling, all driven from a single project model.
+              GIS-based site analysis, optimised multi-tower layouts that hold their setbacks,
+              NBC and IS compliance checked clause by clause, then quantities, cost and
+              programme — all from one project model.
             </p>
           </Reveal>
 
-          <Stagger delay={0.2} className="mt-10 grid grid-cols-3 gap-3">
+          <Stagger delay={0.2} className="mt-10 grid grid-cols-2 gap-3">
             {PILLS.map(([title, caption]) => (
               <RevealItem
                 key={title}
