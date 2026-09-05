@@ -206,6 +206,11 @@ class GaConfig:
     crossover_rate: float = 0.75
     elite: int = 4
     seed: Optional[int] = None
+    # Wall-clock ceiling on the refinement, checked between generations. Population and
+    # generations bound the work in the abstract; this bounds it in a request, where a
+    # large plot with many candidate towers would otherwise make the two above mean a
+    # very different amount of time than they do on a small one.
+    time_budget_s: float = 2.0
 
 
 @dataclass

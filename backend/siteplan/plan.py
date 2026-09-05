@@ -9,7 +9,8 @@ from .envelope import build_envelope
 from .errors import LayoutError
 from .fitness import FitnessResult, PackContext, TowerPlacement, evaluate
 from .frame import geom_to_latlng, geom_to_local, polygons_of
-from .pack import greedy_pack
+from .ga import refine
+from .pack import _name, greedy_pack
 from .parking import ParkingBay, bays_geometry, generate_bays
 from .reserve import ReserveResult, reserve
 from .version import ENGINE_VERSION, polygon_signature
@@ -23,6 +24,10 @@ class LayoutResult:
     bays: List[ParkingBay] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     method: str = "greedy"
+    # What stage 3b did, or None when it did not run. Carried so a reader can see
+    # whether refinement was attempted and what it bought, rather than being handed a
+    # different layout with no account of where it came from.
+    refinement: Optional[Dict[str, Any]] = None
     signature: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -54,6 +59,7 @@ class LayoutResult:
                 "polygons_local": geom_to_local(bays_geometry(self.bays)),
             },
             "method": self.method,
+            "refinement": self.refinement,
             "towers": [
                 {
                     "name": t.name,
@@ -102,6 +108,19 @@ def plan(coordinates: Sequence[Sequence[float]],
     ctx = PackContext(region=res.residual, roads=res.roads,
                       plot_area=env.plot.area, cfg=cfg)
     towers, notes = greedy_pack(ctx)
+    method, ga_report = "greedy", None
+
+    # Stage 3b. The grid is a seed, not an answer: it cannot slide a tower to clear a
+    # spacing shortfall, rotate one block against the others, or trade a storey for a
+    # footprint. `refine` is a ratchet -- it returns the seed unless it beat it -- so this
+    # can only leave the layout the same or better.
+    if cfg.ga.enabled and towers:
+        refined, ga_report = refine(towers, ctx)
+        if ga_report.get("improved"):
+            towers = refined
+            _name(towers)          # positions moved, so the north-to-south order did too
+            method = "genetic"
+
     fit = evaluate(towers, ctx)
 
     # Bays go into whatever open land is left beside a road once the towers are down, so
@@ -121,7 +140,7 @@ def plan(coordinates: Sequence[Sequence[float]],
         warnings.append("Layout failed a hard constraint: " + "; ".join(fit.hard_violations[:3]))
 
     return LayoutResult(reservation=res, towers=towers, fitness=fit, bays=bays,
-                        warnings=warnings, method="greedy",
+                        warnings=warnings, method=method, refinement=ga_report,
                         signature=polygon_signature(coordinates))
 
 

@@ -8,7 +8,7 @@ Stages
   1. envelope  — plot polygon -> setback-inset buildable envelope        [implemented]
   2. reserve   — carve perimeter road ring, driveways and amenity blocks [implemented]
   3. pack      — greedy grid seeding of tower placement                  [implemented]
-     ga        — genetic refinement off the grid                         [next]
+     ga        — genetic refinement off the grid                  [implemented]
 """
 from typing import Any, Dict, Optional, Sequence
 
@@ -21,6 +21,7 @@ from .envelope import EnvelopeResult, build_envelope
 from .errors import LayoutError
 from .frame import LocalFrame
 from .fitness import FitnessResult, PackContext, TowerPlacement, evaluate
+from .ga import refine
 from .pack import greedy_pack, pack_region
 from .plan import LayoutResult, plan, plan_site
 from .reserve import (AmenityPlacement, ReserveResult, reserve,
@@ -31,7 +32,7 @@ __all__ = [
     "SiteLayoutConfig", "TowerConfig", "EnvelopeResult", "LayoutError", "LocalFrame",
     "AmenityPlacement", "ReserveResult", "LayoutResult",
     "FitnessResult", "PackContext", "TowerPlacement", "evaluate",
-    "greedy_pack", "pack_region", "plan", "plan_site",
+    "greedy_pack", "pack_region", "refine", "plan", "plan_site",
     "ENGINE_VERSION", "polygon_signature", "recommend_controls",
     "setback_minimums",
     "validate_setbacks",
