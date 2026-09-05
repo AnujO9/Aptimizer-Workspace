@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Map, Building2, Calculator, Car, ClipboardList, Wallet, ShieldCheck, FileText, History, CalendarClock,
-  Globe2, Box, Ruler, TrendingUp, Sparkles,
+  Globe2, Box, Ruler, TrendingUp, Sparkles, Gauge,
 } from "lucide-react";
 import { api, apiError } from "../lib/api";
 import { TopBar } from "../components/TopBar";
@@ -12,19 +12,26 @@ import { CommandPalette } from "../components/CommandPalette";
 import AptPanel from "../components/AptPanel";
 import { ProjectNav } from "../components/ProjectNav";
 import SiteModule from "../modules/SiteModule";
-import GisModule from "../modules/GisModule";
-import ThreeDModule from "../modules/ThreeDModule";
-import EngineeringModule from "../modules/EngineeringModule";
-import PlanningModule from "../modules/PlanningModule";
-import CalculationsModule from "../modules/CalculationsModule";
-import ParkingModule from "../modules/ParkingModule";
-import BoqModule from "../modules/BoqModule";
-import CostModule from "../modules/CostModule";
-import ProgrammeModule from "../modules/ProgrammeModule";
-import FinanceModule from "../modules/FinanceModule";
-import ComplianceModule from "../modules/ComplianceModule";
-import ReportsModule from "../modules/ReportsModule";
-import CollaborationModule from "../modules/CollaborationModule";
+
+// Loaded on demand. Importing all fifteen eagerly put three.js, leaflet and recharts
+// into the first paint of a workspace that opens on Plot & Setbacks and may never show
+// a 3D scene, a map or a chart at all -- 728 kB gzipped before the user did anything.
+// SiteModule stays eager because it is what "plot" renders on open: splitting it would
+// only trade bundle size for a spinner on the one tab that is always shown.
+const GisModule = lazy(() => import("../modules/GisModule"));
+const ThreeDModule = lazy(() => import("../modules/ThreeDModule"));
+const EngineeringModule = lazy(() => import("../modules/EngineeringModule"));
+const PlanningModule = lazy(() => import("../modules/PlanningModule"));
+const CalculationsModule = lazy(() => import("../modules/CalculationsModule"));
+const ParkingModule = lazy(() => import("../modules/ParkingModule"));
+const BoqModule = lazy(() => import("../modules/BoqModule"));
+const CostModule = lazy(() => import("../modules/CostModule"));
+const ProgrammeModule = lazy(() => import("../modules/ProgrammeModule"));
+const FinanceModule = lazy(() => import("../modules/FinanceModule"));
+const ComplianceModule = lazy(() => import("../modules/ComplianceModule"));
+const ReportsModule = lazy(() => import("../modules/ReportsModule"));
+const DataHealthModule = lazy(() => import("../modules/DataHealthModule"));
+const CollaborationModule = lazy(() => import("../modules/CollaborationModule"));
 
 // Grouped by the order a project actually moves: understand the land, design the
 // building, verify the engineering, price and programme it, then issue it. Two former
@@ -55,12 +62,27 @@ const GROUPS = [
   ]],
   ["deliver", "Deliver", [
     ["compliance", "Compliance", ShieldCheck, ComplianceModule],
+    // Sits in Deliver on purpose: "can this be issued" is the question it answers, and it
+    // is the one worth asking immediately before the report is generated.
+    ["data-health", "Data Reliability", Gauge, DataHealthModule],
     ["reports", "Reports", FileText, ReportsModule],
     ["collaboration", "Versions & Team", History, CollaborationModule],
   ]],
 ];
 
 const MODULES = GROUPS.flatMap(([, , items]) => items);
+
+// Holds the panel's height while a chunk arrives, so the surrounding chrome does not jump
+// and settle. Deliberately quiet: on a warm cache this is on screen for a few frames, and
+// a spinner that announces itself is worse than one nobody notices.
+function ModuleLoading() {
+  return (
+    <div className="flex items-center justify-center py-24 text-sm text-muted-foreground"
+         data-testid="module-loading">
+      Loading module...
+    </div>
+  );
+}
 const GROUP_OF = Object.fromEntries(
   GROUPS.flatMap(([g, , items]) => items.map((m) => [m[0], g])));
 const GROUP_LABEL = Object.fromEntries(GROUPS.map(([g, label]) => [g, label]));
@@ -75,6 +97,14 @@ const EDITABLE = [
   // Setbacks live under dev_controls and are the one value the envelope is built from.
   // Without this every setback edit was discarded on reload.
   "dev_controls",
+  // Shared, society-wide amenity areas are edited through update() like everything else
+  // here. Leaving them out meant the clubhouse and pool areas a user typed were dropped
+  // the moment the page reloaded, while still counting toward area until then.
+  "society_amenities",
+  // The packed site layout. Both the site map and the 3D view write it through update()
+  // and both read it back expecting it to persist; it never did, so every session paid
+  // to regenerate it and the staleness stamp it carries had nothing to compare against.
+  "site_layout",
 ];
 
 export default function Workspace() {
@@ -84,6 +114,10 @@ export default function Workspace() {
   const [accessRole, setAccessRole] = useState("viewer");
   const [active, setActive] = useState("plot");
   const [saveState, setSaveState] = useState("saved");
+  // "fresh" | "recomputing" | "stale" — whether the figures on screen were computed from
+  // the project as it stands. `analysedAt` is when they last were.
+  const [analysisState, setAnalysisState] = useState("recomputing");
+  const [analysedAt, setAnalysedAt] = useState(null);
   const [duration, setDuration] = useState(null);
   const dirty = useRef(0);   // edit generation, not a boolean -- see saveNow
 
@@ -97,16 +131,47 @@ export default function Workspace() {
       .catch((e) => toast.error(apiError(e.response?.data?.detail)));
   }, [projectId]);
 
-  // live recalculation
+  // Live recalculation.
+  //
+  // A failure here used to end in `.catch(() => {})`. When /analyse failed — a backend
+  // restart, a network blip, a document the engine throws on — `analysis` kept its previous
+  // value, so FAR, built-up area, cost, the compliance score and the whole metrics rail
+  // carried on showing figures computed from an older version of the project with nothing
+  // on screen to say so. Silence is the worst outcome for a number someone signs off on.
+  //
+  // So a failure is recorded, retried with the same backoff the autosave uses, and shown.
+  const analyseRetries = useRef(0);
+  const analyseTimer = useRef(null);
+
   useEffect(() => {
     if (!project) return;
-    const t = setTimeout(() => {
+    let cancelled = false;
+    setAnalysisState((prev) => (prev === "stale" ? "stale" : "recomputing"));
+
+    const run = () => {
       api
         .post("/analyse", { project })
-        .then(({ data }) => setAnalysis(data))
-        .catch(() => {});
-    }, 250);
-    return () => clearTimeout(t);
+        .then(({ data }) => {
+          if (cancelled) return;
+          analyseRetries.current = 0;
+          setAnalysis(data);
+          setAnalysedAt(new Date());
+          setAnalysisState("fresh");
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAnalysisState("stale");
+          const wait = Math.min(2000 * 2 ** analyseRetries.current, 30000);
+          analyseRetries.current += 1;
+          analyseTimer.current = setTimeout(run, wait);
+        });
+    };
+
+    analyseTimer.current = setTimeout(run, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(analyseTimer.current);
+    };
   }, [project]);
 
   // Autosave.
@@ -138,8 +203,12 @@ export default function Workspace() {
       if (snapshot[k] !== undefined) updates[k] = snapshot[k];
     });
     try {
-      await api.put(`/projects/${projectId}`, { updates });
+      // The revision this edit started from. The server writes only if the document is
+      // still at it, so a save can no longer replace a whole subtree — the tower list, the
+      // plot — that someone else changed while this tab was editing.
+      const { data } = await api.put(`/projects/${projectId}`, { updates, rev: snapshot.rev });
       retries.current = 0;
+      if (data && data.rev !== undefined) setProject((prev) => ({ ...prev, rev: data.rev }));
       if (dirty.current === generation) {
         dirty.current = false;
         setSaveState("saved");
@@ -147,6 +216,31 @@ export default function Workspace() {
         setSaveState("saving");        // more arrived while this was in flight
       }
     } catch (e) {
+      // 409 is not a failure to retry: retrying the same body would overwrite the other
+      // edit, which is the thing the check exists to prevent. Take the server's copy, put
+      // this tab's fields back on top of it, and let the next tick save that.
+      if (e.response?.status === 409) {
+        try {
+          const { data: server } = await api.get(`/projects/${projectId}`);
+          setProject((prev) => {
+            const merged = { ...server };
+            EDITABLE.forEach((k) => {
+              if (prev[k] !== undefined) merged[k] = prev[k];
+            });
+            return merged;
+          });
+          toast.message("Someone else changed this project", {
+            description: "Their version was loaded and your edits reapplied on top. Check the "
+                       + "tabs you were working in before saving again.",
+          });
+          setSaveState("saving");
+          saveTimer.current = setTimeout(saveNow, 1200);
+        } catch {
+          setSaveState("error");
+          saveTimer.current = setTimeout(saveNow, 5000);
+        }
+        return;
+      }
       setSaveState("error");
       // Back off and keep trying rather than dropping the work on the floor.
       const wait = Math.min(2000 * 2 ** retries.current, 30000);
@@ -286,20 +380,23 @@ export default function Workspace() {
           className="w-56 shrink-0 bg-white border-r border-slate-200 hidden md:block"
           data-testid="metrics-panel"
         >
-          <MetricsStrip analysis={analysis} duration={duration} vertical />
+          <MetricsStrip analysis={analysis} duration={duration} vertical
+                        state={analysisState} at={analysedAt} />
         </aside>
 
         <main className="flex-1 min-w-0 p-4 md:p-6 space-y-4" data-testid={`module-panel-${active}`}>
           {Current && (
-            <Current
-              project={project}
-              analysis={analysis}
-              update={update}
-              readOnly={readOnly}
-              projectId={projectId}
-              setProject={setProject}
-              goToModule={setActive}
-            />
+            <Suspense fallback={<ModuleLoading />}>
+              <Current
+                project={project}
+                analysis={analysis}
+                update={update}
+                readOnly={readOnly}
+                projectId={projectId}
+                setProject={setProject}
+                goToModule={setActive}
+              />
+            </Suspense>
           )}
         </main>
       </div>
@@ -312,7 +409,7 @@ export default function Workspace() {
           onClick={() => setAptOpen(true)}
           title="Ask Apt about this project"
           data-testid="apt-trigger"
-          className="fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/25 pl-3.5 pr-4 py-2.5 text-sm font-medium transition-colors"
+          className="fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-[#F4C2C2] hover:bg-[#EBACAC] text-[#6B2233] shadow-lg shadow-[#F4C2C2]/50 pl-3.5 pr-4 py-2.5 text-sm font-medium transition-colors"
         >
           <Sparkles className="h-4 w-4" />
           Ask Apt
