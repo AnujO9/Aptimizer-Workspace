@@ -9,9 +9,40 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://aptimizer-build.preview.emergentagent.com").rstrip("/")
+# Defaults to the local dev server. The previous default was a preview deployment
+# that no longer exists and answers 404, so these modules skipped everywhere and
+# gated nothing -- a dead default is worse than no default, because it looks live.
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{BASE}/api"
-ADMIN = {"email": "admin@aptimizer.com", "password": "Admin@123"}
+# Read from the environment the server itself reads, so these follow the deployment
+# instead of a literal that stops matching the moment ADMIN_PASSWORD is changed --
+# which does not fail as a wrong password, it fails as a 429 lockout five attempts
+# later, and that is a much harder thing to read off a test report.
+ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@aptimizer.com"),
+         "password": os.environ.get("ADMIN_PASSWORD", "Admin@123")}
+
+# This module drives a DEPLOYED backend over HTTP, not the in-process TestClient the rest
+# of the suite uses. Without a reachable deployment every test in it fails on a 404 from
+# whatever host the default URL points at — which for a long time made a clean run look
+# like thirteen broken features, and meant the suite could not gate anything. Point
+# REACT_APP_BACKEND_URL at a running server to run these; otherwise they skip, because a
+# test that cannot reach its subject has not found a defect.
+pytestmark = pytest.mark.e2e
+
+try:
+    _probe = requests.get(f"{API}/", timeout=5)
+    # The API root answers 200 when a real backend is behind the URL. A 404 here is a
+    # proxy or a parked domain replying for a deployment that is gone — reachable in the
+    # TCP sense and useless in every other, which is exactly the case this guards.
+    _reachable = _probe.status_code == 200
+except Exception as _exc:                                    # noqa: BLE001
+    _reachable = False
+    _why = _exc
+else:
+    _why = f"HTTP {_probe.status_code}"
+if not _reachable:
+    pytest.skip(f"No backend at {BASE} ({_why}) — set REACT_APP_BACKEND_URL to run these",
+                allow_module_level=True)
 
 
 @pytest.fixture(scope="module")
@@ -144,7 +175,12 @@ def test_ai_summary(project, headers, gis):
     r = requests.post(f"{API}/projects/{project}/gis/ai-summary", headers=headers, timeout=180)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["model"] == "claude-sonnet-4-6"
+    # Whatever the deployment configured, including the fallback chain: provider fallback
+    # is a feature, so the answer may legitimately come from an alternate. Pinning one
+    # vendor's model here tied the test to one machine's .env and failed on every other.
+    _configured = [os.environ.get("GEMINI_MODEL", "")] + [
+        m.strip() for m in (os.environ.get("GEMINI_FALLBACK_MODELS") or "").split(",")]
+    assert data["model"] in [m for m in _configured if m], data["model"]
     assert len(data["text"]) > 200
     stored = requests.get(f"{API}/projects/{project}/gis", headers=headers, timeout=30).json()
     assert stored["gis"]["ai_summary"]["text"] == data["text"]

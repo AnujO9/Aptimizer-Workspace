@@ -237,7 +237,7 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
         <SheetHeader className="px-4 py-3 border-b border-slate-200 space-y-0">
           <div className="flex items-center justify-between gap-2">
             <SheetTitle className="text-sm font-semibold flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-blue-600" />
+              <Sparkles className="h-4 w-4 text-[#C77B8B]" />
               Apt
             </SheetTitle>
             {thread.length > 0 && (
@@ -273,7 +273,7 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
               <div className="space-y-1.5">
                 {suggestions.map((q) => (
                   <button key={q} onClick={() => send(q)} disabled={busy}
-                    className="w-full text-left text-[12px] text-slate-700 border border-slate-200 hover:border-blue-300 hover:bg-blue-50/40 rounded-sm px-2.5 py-2 transition-colors"
+                    className="w-full text-left text-[12px] text-slate-700 border border-slate-200 hover:border-[#E9B4B4] hover:bg-[#F4C2C2]/25 hover:text-[#6B2233] rounded-sm px-2.5 py-2 transition-colors"
                     data-testid="apt-suggestion">
                     {q}
                   </button>
@@ -286,7 +286,7 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
           {streaming ? (
             <div data-testid="apt-streaming">
               <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">Apt</div>
-              <div className="border-l-2 border-blue-200 pl-3">
+              <div className="border-l-2 border-[#F4C2C2] pl-3">
                 <Markdown text={streaming} testid="apt-answer-streaming" />
               </div>
             </div>
@@ -307,10 +307,10 @@ export default function AptPanel({ open, onOpenChange, projectId, module = "" })
               onKeyDown={onKeyDown}
               placeholder="Ask about this project…"
               data-testid="apt-input"
-              className="flex-1 resize-none rounded-sm border border-slate-200 px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-slate-50"
+              className="flex-1 resize-none rounded-sm border border-slate-200 px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#E9B4B4] disabled:bg-slate-50"
             />
             <Button onClick={() => send()} disabled={busy || !draft.trim() || notConfigured}
-              className="rounded-sm h-9" data-testid="apt-send">
+              variant="ai" className="rounded-sm h-9" data-testid="apt-send">
               <Send className="h-3.5 w-3.5" />
             </Button>
           </div>

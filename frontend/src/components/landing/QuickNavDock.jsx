@@ -1,10 +1,11 @@
 import { Link } from "react-router-dom";
-import { FileText, LayoutGrid, LogIn, Rocket, Workflow } from "lucide-react";
+import { FileText, LayoutGrid, LogIn, Rocket, Sparkles, Workflow } from "lucide-react";
 import { Dock, DockIcon, DockItem, DockLabel } from "../ui/dock";
 
 const SECTION_ITEMS = [
   { title: "Pipeline", icon: Workflow, href: "#pipeline" },
   { title: "Modules", icon: LayoutGrid, href: "#modules" },
+  { title: "Intelligence", icon: Sparkles, href: "#intelligence" },
   { title: "Traceability", icon: FileText, href: "#traceability" },
   { title: "Sign in", icon: LogIn, to: "/login" },
 ];

@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from siteplan import (AmenityBlock, LayoutError, SiteLayoutConfig, build_envelope,  # noqa: E402
                       reserve, reserve_from_coordinates, reserve_site, resolve_amenity_size)
 from siteplan.frame import LocalFrame, polygons_of  # noqa: E402
-from siteplan.reserve import driveway_network, perimeter_ring  # noqa: E402
 
 LAT0, LNG0 = 12.9716, 77.5946
 FRAME = LocalFrame(LAT0, LNG0)
@@ -97,11 +96,23 @@ def test_green_can_be_disabled():
 
 
 def test_envelope_narrower_than_the_ring_warns_and_leaves_nothing_packable():
-    env = build_envelope(to_latlng(box_pts(26, 26)), [],
+    env = build_envelope(to_latlng(box_pts(22, 22)), [],
                          SiteLayoutConfig.from_dict({"setbacks": {"default": 5}}))
     r = reserve(env, env.config)
     assert r.residual.is_empty
     assert any("narrower than" in w for w in r.warnings)
+
+
+def test_a_core_too_small_to_use_says_so_instead_of_returning_an_empty_area():
+    """The ring fits, so nothing upstream objects, and what it leaves inside is below the
+    minimum usable region and is dropped. An empty packable area whose every warning points
+    somewhere else reads as a packer that failed; the truth is a site that never had room
+    for one, and that has to travel with the result."""
+    env = build_envelope(to_latlng(box_pts(26, 26)), [],
+                         SiteLayoutConfig.from_dict({"setbacks": {"default": 5}}))
+    r = reserve(env, env.config)
+    assert r.residual.is_empty
+    assert any("nothing remains for towers" in w for w in r.warnings)
 
 
 # ---------------------------------------------------------------- driveways
@@ -120,9 +131,21 @@ def test_deep_core_gets_driveways_so_nothing_is_stranded():
 
 
 def test_shallow_core_needs_no_driveways():
-    r = run(box_pts(90, 70), road={"max_distance_to_road": 60.0},
+    # central_spine_min_core is raised out of the way so this measures the reach rule
+    # alone; the rule that gives a deep core a spine regardless has its own test below.
+    r = run(box_pts(90, 70), road={"max_distance_to_road": 60.0,
+                                   "central_spine_min_core": 10_000.0},
             amenities={"enabled": False})
     assert r.driveways.is_empty
+
+
+def test_a_core_deep_enough_for_two_rows_of_flats_gets_a_spine_within_reach_anyway():
+    """Reach is not the only reason to cut a drive. A core deep enough to hold two rows of
+    flats back to back needs one down the middle whatever the distance rule says, or the
+    flats on the far side are served by nothing."""
+    r = run(box_pts(90, 70), road={"max_distance_to_road": 60.0},
+            amenities={"enabled": False})
+    assert not r.driveways.is_empty
 
 
 def test_driveways_stay_inside_the_core_and_off_the_residual():
@@ -175,9 +198,18 @@ def test_block_with_no_sizing_is_reported_not_crashed():
 
 
 # ---------------------------------------------------------------- amenity placement
+# Three separate blocks, for the tests that are about how blocks relate to each other.
+# The shipped default is one integrated clubhouse, which cannot exhibit a pairwise gap.
+THREE_BLOCKS = [
+    {"key": "club", "name": "Clubhouse", "plot_area_pct": 1.5, "height_m": 7.5, "floors": 2},
+    {"key": "pool", "name": "Pool", "plot_area_pct": 1.0, "height_m": 1.5},
+    {"key": "court", "name": "Sports Court", "plot_area_pct": 1.0, "height_m": 3.0},
+]
+
+
 def test_amenities_are_placed_inside_the_envelope_and_clear_of_roads():
     r = run(box_pts(200, 150))
-    assert len(r.amenities) == 3
+    assert len(r.amenities) == len(r.envelope.config.amenities.blocks)
     for a in r.amenities:
         assert r.envelope.envelope.buffer(1e-6).contains(a.polygon)
         assert a.polygon.intersection(r.roads).area == pytest.approx(0.0, abs=1e-6)
@@ -214,12 +246,33 @@ def test_amenity_that_cannot_fit_is_reported_not_dropped_silently():
     assert any("does not fit" in w for w in r.warnings)
 
 
-def test_amenities_carry_their_own_low_rise_height():
+def test_amenities_carry_their_own_height_not_a_tower_height():
+    """An amenity is never part of a tower and never takes a tower's height. The shipped
+    clubhouse stacks its facilities into four storeys on one footprint rather than spending
+    three footprints on three pavilions, so "low-rise" here means low against the towers,
+    not single-storey -- and the number still comes off the block, not the tower."""
     r = run(box_pts(200, 150))
+    placed = {a.key: a for a in r.amenities}
+    spec = {b.key: b for b in r.envelope.config.amenities.blocks}
+    for key, block in spec.items():
+        assert placed[key].height_m == block.height_m
+        assert placed[key].floors == block.floors
+
+    club = placed["clubhouse"]
+    assert club.floors == 4 and club.height_m == 14.0
+    # An absolute ceiling rather than a comparison against the towers: the shortest tower
+    # the packer will build is floors_min x floor_height = 12 m, so "shorter than a tower"
+    # is not true of a four-storey clubhouse and asserting it would only encode a wrong
+    # idea of what low-rise means here. What must hold is that it stays a low building.
+    assert club.height_m <= 15.0 and club.floors <= 4
+
+
+def test_separately_configured_amenities_keep_their_own_heights():
+    r = run(box_pts(200, 150), amenities={"blocks": THREE_BLOCKS})
     by_key = {a.key: a for a in r.amenities}
-    assert by_key["clubhouse"].height_m == 7.5 and by_key["clubhouse"].floors == 2
+    assert by_key["club"].height_m == 7.5 and by_key["club"].floors == 2
     assert by_key["pool"].height_m == 1.5
-    assert all(a.height_m <= 8 for a in r.amenities), "amenities must stay low-rise"
+    assert all(a.height_m <= 8 for a in r.amenities)
 
 
 def _min_pairwise_gap(result):
@@ -229,21 +282,22 @@ def _min_pairwise_gap(result):
 
 def test_spread_term_disperses_amenities_instead_of_clustering():
     """With the spread weight zeroed the blocks huddle; with it on they separate."""
-    clustered = run(box_pts(220, 160), amenities={"spread_weight": 0.0, "compactness_weight": 0.85})
-    dispersed = run(box_pts(220, 160))
+    clustered = run(box_pts(220, 160), amenities={"blocks": THREE_BLOCKS, "spread_weight": 0.0,
+                                                  "compactness_weight": 0.85})
+    dispersed = run(box_pts(220, 160), amenities={"blocks": THREE_BLOCKS})
     assert len(clustered.amenities) == len(dispersed.amenities) == 3
     assert _min_pairwise_gap(dispersed) > _min_pairwise_gap(clustered)
 
 
 def test_dispersed_amenities_are_a_meaningful_distance_apart():
-    r = run(box_pts(220, 160))
+    r = run(box_pts(220, 160), amenities={"blocks": THREE_BLOCKS})
     # Auto target separation is 0.55 * sqrt(packable area); require at least half of it.
     target = math.sqrt(r.residual.area) * 0.55
     assert _min_pairwise_gap(r) >= target * 0.5
 
 
 def test_explicit_target_separation_overrides_the_derived_one():
-    r = run(box_pts(300, 220), amenities={"target_separation": 60.0})
+    r = run(box_pts(300, 220), amenities={"blocks": THREE_BLOCKS, "target_separation": 60.0})
     assert _min_pairwise_gap(r) >= 30.0
 
 
@@ -297,7 +351,7 @@ def test_reserve_site_payload_is_a_superset_of_stage_one():
 
     assert out["roads"]["ring_area_sqm"] > 0
     assert out["roads"]["ring_polygons"]
-    assert len(out["amenities"]) == 3
+    assert len(out["amenities"]) == len(SiteLayoutConfig().amenities.blocks)
     assert out["amenities"][0]["polygons"]
     assert out["residual"]["area_sqm"] > 0
     assert 0 < out["residual"]["pct_of_envelope"] < 100

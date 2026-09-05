@@ -1,9 +1,43 @@
 """RBAC verification for V2 GIS endpoints + V1 regression spot checks."""
 import os
+
+import pytest
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://aptimizer-build.preview.emergentagent.com").rstrip("/")
+# Defaults to the local dev server. The previous default was a preview deployment
+# that no longer exists and answers 404, so these modules skipped everywhere and
+# gated nothing -- a dead default is worse than no default, because it looks live.
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{BASE}/api"
+
+# This module drives a DEPLOYED backend over HTTP, not the in-process TestClient the rest
+# of the suite uses. Without a reachable deployment every test in it fails on a 404 from
+# whatever host the default URL points at — which for a long time made a clean run look
+# like thirteen broken features, and meant the suite could not gate anything. Point
+# REACT_APP_BACKEND_URL at a running server to run these; otherwise they skip, because a
+# test that cannot reach its subject has not found a defect.
+pytestmark = pytest.mark.e2e
+
+try:
+    _probe = requests.get(f"{API}/", timeout=5)
+    # The API root answers 200 when a real backend is behind the URL. A 404 here is a
+    # proxy or a parked domain replying for a deployment that is gone — reachable in the
+    # TCP sense and useless in every other, which is exactly the case this guards.
+    _reachable = _probe.status_code == 200
+except Exception as _exc:                                    # noqa: BLE001
+    _reachable = False
+    _why = _exc
+else:
+    _why = f"HTTP {_probe.status_code}"
+if not _reachable:
+    pytest.skip(f"No backend at {BASE} ({_why}) — set REACT_APP_BACKEND_URL to run these",
+                allow_module_level=True)
+
+
+# The deployment's own admin, not a literal. A wrong password here does not fail as a
+# wrong password: it fails as a 429 lockout five attempts later, in a different test.
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@aptimizer.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123")
 
 
 def _login(email, pwd):
@@ -20,7 +54,7 @@ def _register_if_missing(email, name, role, pwd):
 
 def test_rbac_viewer_cannot_run_gis_but_can_read():
     _register_if_missing("viewer@aptimizer.com", "Viewer", "viewer", "Viewer@123")
-    admin = _login("admin@aptimizer.com", "Admin@123")
+    admin = _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     ah = {"Authorization": f"Bearer {admin}"}
 
     # create a project + share to viewer
@@ -52,7 +86,7 @@ def test_rbac_viewer_cannot_run_gis_but_can_read():
 
 def test_v1_regression_analysis_and_reports():
     """V1 spot check: /analysis still returns expected values and PDF+xlsx still download."""
-    admin = _login("admin@aptimizer.com", "Admin@123")
+    admin = _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     ah = {"Authorization": f"Bearer {admin}"}
 
     projects = requests.get(f"{API}/projects", headers=ah, timeout=30).json()

@@ -11,6 +11,8 @@ import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import vastu
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,10 +121,26 @@ def _unit_spec(unit_type: str, carpet: float) -> Dict[str, Any]:
         }
 
 
-def audit_vastu_and_mep(rooms: List[Dict[str, Any]], floor: int = 1, total_floors: int = 1) -> Dict[str, Any]:
-    """Evaluates full Vastu Shastra compliance and MEP plumbing stack grouping according to the Manual."""
+def audit_vastu_and_mep(rooms: List[Dict[str, Any]], floor: int = 1, total_floors: int = 1,
+                        boxes: Optional[Dict[str, Any]] = None,
+                        meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """What the plan actually achieves against the manual, stated as found.
+
+    Two lists, never merged. `violations` are hard rules broken — a balcony off an internal
+    wall, a pooja room with no door onto the living room or a wall shared with a bathroom,
+    overlapping rooms, plan that belongs to no room. `anchors` reports the soft sector
+    targets one by one, each carrying the sector the room is actually in.
+
+    The previous version of this function returned a fixed dictionary of "Compliant"
+    strings regardless of what the checks found, so a plan with a logged VIOLATION still
+    reported every anchor as met. An audit that cannot say no is not an audit.
+    """
     if not rooms:
-        return {"score": 0, "status": "No rooms defined", "anchors": {}, "validations": []}
+        return {"score": 0, "status": "No rooms defined", "anchors": {}, "violations": [],
+                "unit_audits": {}}
+
+    boxes = boxes or {}
+    meta = meta or {}
 
     units_rooms: Dict[str, List[Dict[str, Any]]] = {}
     for r in rooms:
@@ -130,543 +148,212 @@ def audit_vastu_and_mep(rooms: List[Dict[str, Any]], floor: int = 1, total_floor
         if uid:
             units_rooms.setdefault(uid, []).append(r)
 
-    unit_audits = {}
+    unit_audits: Dict[str, Any] = {}
+    all_violations: List[str] = []
+    anchor_tally = {"pooja": [0, 0], "kitchen": [0, 0], "master": [0, 0]}   # [met, placed]
     total_score = 0.0
 
     for uid, urooms in units_rooms.items():
-        xs = [float(r.get("x", 0)) for r in urooms]
-        ys = [float(r.get("y", 0)) for r in urooms]
-        x2s = [float(r.get("x", 0)) + float(r.get("w", 0)) for r in urooms]
-        y2s = [float(r.get("y", 0)) + float(r.get("h", 0)) for r in urooms]
+        box = boxes.get(uid) or _bounding_box(urooms)
+        info = meta.get(uid, {})
+        exterior = info.get("exterior_edges") or ["N", "S", "E", "W"]
+        entry = info.get("entry_edge") or "S"
 
-        min_x, max_x = min(xs), max(x2s)
-        min_y, max_y = min(ys), max(y2s)
-        mid_x = (min_x + max_x) / 2.0
-        mid_y = (min_y + max_y) / 2.0
+        hard = vastu.check_unit(urooms, box, exterior, entry)
+        sectors = vastu.sector_report(urooms, box)
+        for key, rep in sectors.items():
+            if rep.get("placed"):
+                anchor_tally[key][1] += 1
+                if rep.get("met"):
+                    anchor_tally[key][0] += 1
 
-        # Cardinal Quadrants (North is UP / -Y; East is RIGHT / +X; South is DOWN / +Y; West is LEFT / -X)
-        # NE (Ishanya): x >= mid_x, y <= mid_y
-        # SE (Agni):    x >= mid_x, y > mid_y
-        # SW (Nairutya):x < mid_x,  y > mid_y
-        # NW (Vayu):    x < mid_x,  y <= mid_y
+        # Score is the share of the manual's rules this flat actually meets: hard rules
+        # carry three quarters of it because a broken one is a defect, not a preference.
+        placed = [k for k, r in sectors.items() if r.get("placed")]
+        soft = (sum(1 for k in placed if sectors[k].get("met")) / len(placed)) if placed else 1.0
+        hard_share = 0.0 if hard["violations"] else 1.0
+        score = round((hard_share * 0.75 + soft * 0.25) * 100, 1)
+        total_score += score
 
-        pooja = next((r for r in urooms if r.get("type") == "pooja"), None)
-        kitchen = next((r for r in urooms if r.get("type") == "kitchen"), None)
-        master = next((r for r in urooms if "master" in str(r.get("name", "")).lower() or r.get("id", "").endswith("-mbed")), None)
-        baths = [r for r in urooms if r.get("type") == "bathroom"]
-        shaft = next((r for r in urooms if r.get("type") == "shaft"), None)
-        utility = next((r for r in urooms if r.get("type") == "utility"), None)
-
-        score = 0.0
-        checks = []
-
-        # 1. Master Bedroom (Nairutya - SW Sector) [25 pts]
-        if master:
-            mx_c = float(master.get("x", 0)) + float(master.get("w", 0)) / 2.0
-            my_c = float(master.get("y", 0)) + float(master.get("h", 0)) / 2.0
-            in_sw = mx_c <= mid_x and my_c >= mid_y
-            in_ne = mx_c >= mid_x and my_c <= mid_y
-            if in_sw:
-                score += 25.0
-                checks.append("Master Bedroom anchored in SW Nairutya sector (+25)")
-            elif not in_ne:
-                score += 18.0
-                checks.append("Master Bedroom safely outside NE sector (+18)")
-            else:
-                checks.append("VIOLATION: Master Bedroom placed in NE sector (prohibited in Vastu)")
-        else:
-            score += 15.0
-
-        # 2. Kitchen (Agni - SE Sector or Secondary NW) [25 pts]
-        if kitchen:
-            kx_c = float(kitchen.get("x", 0)) + float(kitchen.get("w", 0)) / 2.0
-            ky_c = float(kitchen.get("y", 0)) + float(kitchen.get("h", 0)) / 2.0
-            in_se = kx_c >= mid_x and ky_c >= mid_y
-            in_nw = kx_c <= mid_x and ky_c <= mid_y
-            if in_se:
-                score += 25.0
-                checks.append("Kitchen positioned in primary SE Agni fire zone (+25)")
-            elif in_nw:
-                score += 22.0
-                checks.append("Kitchen positioned in secondary NW Vayu fire zone (+22)")
-            else:
-                score += 12.0
-                checks.append("Kitchen in alternate sector (+12)")
-        else:
-            score += 15.0
-
-        # 3. Pooja Room (Ishanya - NE Sector, never sharing wall with bathroom) [25 pts]
-        if pooja:
-            px_c = float(pooja.get("x", 0)) + float(pooja.get("w", 0)) / 2.0
-            py_c = float(pooja.get("y", 0)) + float(pooja.get("h", 0)) / 2.0
-            in_ne = px_c >= mid_x and py_c <= mid_y
-            in_east_or_north = px_c >= mid_x or py_c <= mid_y
-
-            # Check bathroom wall sharing
-            shares_bath_wall = False
-            for b in baths:
-                bx1, by1 = float(b.get("x", 0)), float(b.get("y", 0))
-                bx2, by2 = bx1 + float(b.get("w", 0)), by1 + float(b.get("h", 0))
-                px1, py1 = float(pooja.get("x", 0)), float(pooja.get("y", 0))
-                px2, py2 = px1 + float(pooja.get("w", 0)), py1 + float(pooja.get("h", 0))
-                if (abs(px1 - bx2) < 0.1 or abs(px2 - bx1) < 0.1) and not (py2 <= by1 or py1 >= by2):
-                    shares_bath_wall = True
-                if (abs(py1 - by2) < 0.1 or abs(py2 - by1) < 0.1) and not (px2 <= bx1 or px1 >= bx2):
-                    shares_bath_wall = True
-
-            if in_ne and not shares_bath_wall:
-                score += 25.0
-                checks.append("Pooja Room in NE Ishanya sector, decoupled from bathrooms (+25)")
-            elif in_east_or_north and not shares_bath_wall:
-                score += 20.0
-                checks.append("Pooja Room oriented East/North without bath conflicts (+20)")
-            else:
-                score += 8.0
-                if shares_bath_wall:
-                    checks.append("VIOLATION: Pooja shares wall with bathroom (prohibited)")
-                else:
-                    checks.append("Pooja placed outside auspicious NE zone")
-        else:
-            score += 20.0
-            checks.append("Pooja niche provisioned in Living/Dining area (+20)")
-
-        # 4. MEP Stack & Plumbing Optimization [25 pts]
-        has_shaft = shaft is not None
-        if has_shaft:
-            score += 15.0
-            checks.append("Central vertical MEP plumbing shaft integrated (+15)")
-        else:
-            score += 8.0
-
-        if utility and kitchen:
-            score += 10.0
-            checks.append("Utility dry balcony snapped directly to Kitchen (+10)")
-        else:
-            score += 6.0
-
-        unit_score = round(min(score, 100.0), 1)
-        total_score += unit_score
+        all_violations.extend(f"{uid}: {v}" for v in hard["violations"])
         unit_audits[uid] = {
-            "score": unit_score,
-            "checks": checks,
+            "score": score,
+            "unit_type": info.get("unit_type"),
+            "entry_edge": entry,
+            "facing": {"S": "South facing", "N": "North facing",
+                       "E": "East facing", "W": "West facing"}.get(entry, entry),
+            "coverage_pct": hard["coverage_pct"],
+            "violations": hard["violations"],
+            "anchors": sectors,
+            "notes": info.get("notes", []),
+            "checks": [f"{k}: {v['detail']}" for k, v in sectors.items() if v.get("placed")],
         }
 
     n_units = max(len(units_rooms), 1)
     avg_score = round(total_score / n_units, 1)
-    is_penthouse = (floor == total_floors and total_floors >= 3)
+
+    def anchor_line(key, label):
+        met, placed = anchor_tally[key]
+        if not placed:
+            return f"{label}: not in this floor's programme"
+        if met == placed:
+            return f"{label}: in sector in all {placed} flat(s)"
+        return f"{label}: in sector in {met} of {placed} flat(s)"
 
     return {
         "score": avg_score,
-        "status": "Fully Compliant" if avg_score >= 88 else "Substantially Compliant" if avg_score >= 75 else "Needs Adjustment",
-        "floor_tier": "Top Floor (Penthouse Level with Wrap-around Terraces)" if is_penthouse else f"Floor {floor} (Residential Level)",
+        # Wording follows the violations, not the score: any hard breach is "Non-compliant"
+        # however well the flat scores on sectors.
+        "status": ("Non-compliant — hard rules broken" if all_violations
+                   else "Fully Compliant" if avg_score >= 88
+                   else "Compliant, some sector targets unmet"),
+        "floor_tier": ("Top Floor (Penthouse Level with wrap-around terraces)"
+                       if floor == total_floors and total_floors >= 3
+                       else f"Floor {floor} (Residential Level)"),
+        "violations": all_violations,
         "anchors": {
-            "ishanya_ne_pooja": "Compliant (NE Sector / East Facing)",
-            "agni_se_kitchen": "Compliant (SE Primary or NW Secondary Fire Zone)",
-            "nairutya_sw_master": "Compliant (SW Sector Locked)",
-            "mep_stack_grouping": "Optimized (Vertical Shaft Clustering)",
-            "privacy_gradients": "Enforced (Transitional Corridors)",
+            "ishanya_ne_pooja": anchor_line("pooja", "Pooja (Ishanya, NE)"),
+            "agni_se_kitchen": anchor_line("kitchen", "Kitchen (Agni, SE / NW)"),
+            "nairutya_sw_master": anchor_line("master", "Master bedroom (Nairutya, SW)"),
+            "balconies_on_air": ("every balcony projects from an exterior wall"
+                                 if not any("balcony" in v for v in all_violations)
+                                 else "a balcony is not on an exterior wall — see violations"),
+            "pooja_door_from_living": ("every pooja room takes its door off the living room"
+                                       if not any("pooja" in v for v in all_violations)
+                                       else "a pooja room fails its door or bathroom rule — see violations"),
+            "privacy_gradients": ("bedroom doors route through a passage or foyer"
+                                  if not any("passage or foyer" in v for v in all_violations)
+                                  else "a bedroom has no transitional space to open onto"),
         },
         "unit_audits": unit_audits,
     }
 
 
+def _bounding_box(rooms: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The flat's box, recovered from its rooms — used when the caller did not supply one
+    (an audit of a stored plan, or of one an LLM returned)."""
+    xs = [float(r.get("x", 0)) for r in rooms]
+    ys = [float(r.get("y", 0)) for r in rooms]
+    x2 = [float(r.get("x", 0)) + float(r.get("w", 0)) for r in rooms]
+    y2 = [float(r.get("y", 0)) + float(r.get("h", 0)) for r in rooms]
+    return {"x": min(xs), "y": min(ys), "w": max(x2) - min(xs), "h": max(y2) - min(ys)}
+
+
 def generate_architectural_template(tower: Dict[str, Any], floor: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Generates a dynamic, architectural floor plate that strictly implements the Generative Architecture & Vastu Logic Manual.
-    
-    Features:
-      - Vastu Rotation Matrix: Master Bed in SW, Kitchen in SE (or NW for South entrances), Pooja in NE.
-      - Scaled 1BHK to 5BHK Penthouse programs (including walk-in closets, powder rooms, servant quarters with dedicated service access).
-      - Back-to-back bathrooms clustered around central MEP duct shafts for minimal piping and BOQ efficiency.
-      - Exterior edge snapping for natural daylighting, cross-ventilation, and projecting balconies.
-      - Dynamic floor progression: Top floor automatically transitions to luxury penthouses with wrap-around terraces.
+    """A floor plate packed to the Generative Architecture & Vastu Logic Manual.
+
+    Placement is delegated to `vastu.pack_unit`, which subdivides each flat by guillotine
+    cuts: every cut consumes its rectangle exactly, so rooms cannot overlap and no strip of
+    plan is left belonging to nothing. What no room claims becomes passage — which is also
+    the transitional corridor the manual requires bedroom doors to route through instead of
+    opening onto the living room.
+
+    The hard rules (balconies on air, the pooja's door off the living room and its walls
+    clear of any bathroom, utility snapped to the kitchen, full coverage) are enforced by
+    construction and then re-checked by `vastu.check_unit`. The sector anchors are targeted
+    and reported as achieved or not — a flat with one facade cannot always give all three
+    their sector, and saying otherwise would be the least useful thing this could do.
     """
     total_floors = max(int(tower.get("floors") or 1), 1)
     is_top_floor = (floor == total_floors and total_floors >= 3)
 
     raw_units = tower.get("units") or [{"type": "2bhk", "count": 2, "carpet_area": 85.0}]
     expanded_units = []
-
     for u in raw_units:
         count = max(int(u.get("count") or 1), 1)
         u_type = u.get("type", "2bhk")
         carpet = float(u.get("carpet_area") or 85.0)
-
-        # On top penthouse floor, elevate top-tier units to luxury penthouse / 4BHK specs
-        if is_top_floor:
-            if "3bhk" in u_type.lower() or "4bhk" in u_type.lower():
-                u_type = "penthouse"
-                carpet = max(carpet * 1.35, 160.0)
-
+        # The manual's top-tier progression: the top floor lifts 3/4BHK stock to penthouse.
+        if is_top_floor and ("3bhk" in u_type.lower() or "4bhk" in u_type.lower()):
+            u_type = "penthouse"
+            carpet = max(carpet * 1.35, 160.0)
         for _ in range(count):
-            expanded_units.append({
-                "type": u_type,
-                "carpet": carpet,
-            })
-
+            expanded_units.append({"type": u_type, "carpet": carpet})
     if not expanded_units:
         expanded_units = [{"type": "2bhk", "carpet": 85.0}, {"type": "3bhk", "carpet": 115.0}]
 
     corridor_w = max(float(tower.get("corridor_width") or 2.0), 1.8)
-    rooms = []
-
-    # Split units symmetrically along central East-West corridor spine
-    # North units: y < corridor_y. (South-facing entrance from corridor)
-    # South units: y > corridor_y + corridor_w. (North-facing entrance from corridor)
     n = len(expanded_units)
     north_units = expanded_units[:(n + 1) // 2]
     south_units = expanded_units[(n + 1) // 2:]
 
-    corridor_y = 14.0
+    # A flat is proportioned to its own carpet area; the row is as deep as its deepest flat
+    # so both rows meet the corridor on a straight line.
+    def dims(u):
+        """A flat is proportioned to its programme, not to a square.
 
-    def layout_unit(u: Dict[str, Any], uid: str, idx: int, current_x: float, is_north: bool) -> float:
-        carpet = u["carpet"]
-        u_type = u["type"].lower()
-        aspect = 1.35
-        unit_w = max(round(math.sqrt(carpet * aspect), 1), 9.0)
-        unit_h = max(round(carpet / unit_w, 1), 7.5)
+        Sizing from carpet area alone gives every tier the same aspect, so a five-bedroom
+        penthouse comes out as deep as it is wide — and then eight rooms have to share the
+        frontage of a two-bedroom flat. Real corridor-served flats get wider as they get
+        bigger, because every habitable room needs its own piece of facade. The width is
+        therefore the greater of the square proportion and what the room count actually
+        needs; the depth follows from the area.
+        """
+        prog = vastu.unit_programme(u["type"], u["carpet"])
+        # bedrooms + living + kitchen, each wanting a column on the facade.
+        facade_rooms = prog["beds"] + 2 + (1 if prog["is_penthouse"] else 0)
+        # The columns are not equal: the master, the living room and the kitchen are wider
+        # than a secondary bedroom, so an equal-share estimate under-reads the frontage and
+        # the narrowest column still lands below the minimum. The 2.15 is that extra width,
+        # expressed in bedroom-widths, taken from the slot weights in vastu.pack_unit.
+        needed = (facade_rooms + 2.15) * (vastu.MIN_COLUMN_W + 0.35) + 2.4   # + pooja strip
+        w = max(round(math.sqrt(u["carpet"] * 1.15), 1), round(needed, 1), 7.5)
+        return w, max(round(u["carpet"] / w, 1), 7.0)
 
-        # North units sit above corridor: Y goes from (corridor_y - unit_h) to corridor_y
-        # South units sit below corridor: Y goes from (corridor_y + corridor_w) to (corridor_y + corridor_w + unit_h)
-        base_y = (corridor_y - unit_h) if is_north else (corridor_y + corridor_w)
+    north_dims = [dims(u) for u in north_units]
+    south_dims = [dims(u) for u in south_units]
+    north_h = max([h for _, h in north_dims], default=0.0)
+    south_h = max([h for _, h in south_dims], default=0.0)
+    corridor_y = north_h
 
-        # Bounding box coordinates:
-        # X: [current_x, current_x + unit_w] -> Left is West, Right is East
-        # Y: [base_y, base_y + unit_h] -> Top is North, Bottom is South
-        # Vastu sectors:
-        #   NW: x < mid_x, y < mid_y (Top-Left)
-        #   NE: x >= mid_x, y < mid_y (Top-Right)
-        #   SW: x < mid_x, y >= mid_y (Bottom-Left)
-        #   SE: x >= mid_x, y >= mid_y (Bottom-Right)
+    rooms: List[Dict[str, Any]] = []
+    unit_boxes: Dict[str, Dict[str, Any]] = {}
+    unit_meta: Dict[str, Dict[str, Any]] = {}
 
-        # -------------------------------------------------------------
-        # VASTU ANCHORS PLACEMENT
-        # -------------------------------------------------------------
-        # 1. Master Bedroom: strictly locked to SOUTH-WEST (SW) sector (Nairutya).
-        #    X range: [current_x, mid_x], Y range: [mid_y, base_y + unit_h]
-        # -------------------------------------------------------------
-        mbed_w = round(unit_w * 0.44, 2)
-        mbed_h = round(unit_h * 0.48, 2)
-        mbed_x = round(current_x, 2)
-        mbed_y = round(base_y + unit_h - mbed_h, 2)
+    def place_row(units, dimensions, is_north):
+        """Lay one row of flats along the corridor.
 
-        rooms.append({
-            "id": f"{uid}-mbed",
-            "name": "Grand Master Suite" if "penthouse" in u_type else "Master Bedroom",
-            "type": "bedroom",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": mbed_x,
-            "y": mbed_y,
-            "w": mbed_w,
-            "h": mbed_h,
-            "has_window": True,
-            "exterior": True,
-            "vastu": "SW (Nairutya)",
-        })
+        The corridor is the wall each flat is entered from, so it is also the one wall that
+        is NOT open to air. A north-row flat is entered from its south wall and is therefore
+        South-facing in the manual's rotation matrix; a south-row flat is North-facing. End
+        flats gain their outer side wall as a second facade.
+        """
+        cursor = 0.0
+        entry_edge = "S" if is_north else "N"
+        last = len(units) - 1
+        for idx, (u, (uw, uh)) in enumerate(zip(units, dimensions)):
+            uid = f"unit-{'N' if is_north else 'S'}{idx + 1}"
+            box_y = (corridor_y - uh) if is_north else (corridor_y + corridor_w)
+            box = {"x": round(cursor, 2), "y": round(box_y, 2), "w": uw, "h": uh}
+            exterior = ["N"] if is_north else ["S"]
+            if idx == 0:
+                exterior.append("W")
+            if idx == last:
+                exterior.append("E")
+            packed, notes = vastu.pack_unit(box, u["type"], u["carpet"], entry_edge,
+                                            exterior, uid, idx)
+            rooms.extend(packed)
+            unit_boxes[uid] = box
+            unit_meta[uid] = {"entry_edge": entry_edge, "exterior_edges": exterior,
+                              "notes": notes, "unit_type": u["type"], "carpet": u["carpet"]}
+            cursor += uw + 0.5      # party wall between flats
+        return max(cursor - 0.5, 0.0)
 
-        # Attached Master Ensuite Bath in SW zone (abutting interior/duct)
-        mbath_w = round(mbed_w * 0.48, 2)
-        mbath_h = round(mbed_h * 0.46, 2)
-        rooms.append({
-            "id": f"{uid}-mbath",
-            "name": "Master Ensuite Bath",
-            "type": "bathroom",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": round(mbed_x + mbed_w - mbath_w, 2),
-            "y": round(mbed_y, 2),
-            "w": mbath_w,
-            "h": mbath_h,
-            "has_window": False,
-            "exterior": False,
-        })
+    north_w = place_row(north_units, north_dims, True)
+    south_w = place_row(south_units, south_dims, False)
 
-        # -------------------------------------------------------------
-        # 2. Central MEP Duct Shaft: placed adjacent to Master Bath & Utility
-        # -------------------------------------------------------------
-        shaft_w = 0.8
-        shaft_h = 1.0
-        rooms.append({
-            "id": f"{uid}-shaft",
-            "name": "MEP Duct Shaft",
-            "type": "shaft",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": round(mbed_x + mbed_w, 2),
-            "y": round(mbed_y, 2),
-            "w": shaft_w,
-            "h": shaft_h,
-            "has_window": False,
-            "exterior": False,
-        })
-
-        # -------------------------------------------------------------
-        # 3. Kitchen & Utility Placement (Agni Sector)
-        #    South-side units enter from North: Kitchen sits in SE (Bottom-Right).
-        #    North-side units enter from South: Kitchen in NW (Top-Left) or SE to prevent foyer conflict.
-        # -------------------------------------------------------------
-        kit_w = round(unit_w * 0.38, 2)
-        kit_h = round(unit_h * 0.42, 2)
-
-        if is_north:
-            # North unit entering from South corridor:
-            # Place Kitchen in NW sector (secondary Agni zone) to prevent entrance clash on South wall
-            kit_x = round(current_x, 2)
-            kit_y = round(base_y, 2)
-            kit_vastu = "NW (Vayu Secondary Agni)"
-        else:
-            # South unit entering from North corridor:
-            # Place Kitchen in SE sector (primary Agni zone)
-            kit_x = round(current_x + unit_w - kit_w, 2)
-            kit_y = round(base_y + unit_h - kit_h, 2)
-            kit_vastu = "SE (Agni)"
-
-        rooms.append({
-            "id": f"{uid}-kitchen",
-            "name": "Kitchen (East Hob)",
-            "type": "kitchen",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": kit_x,
-            "y": kit_y,
-            "w": kit_w,
-            "h": kit_h,
-            "has_window": True,
-            "exterior": True,
-            "vastu": kit_vastu,
-        })
-
-        # Utility / Dry Balcony snapped directly to Kitchen
-        util_w = round(kit_w * 0.45, 2)
-        util_h = kit_h
-        util_x = round(kit_x + kit_w, 2) if (kit_x + kit_w + util_w <= current_x + unit_w) else round(kit_x - util_w, 2)
-        rooms.append({
-            "id": f"{uid}-utility",
-            "name": "Utility / Dry Balcony",
-            "type": "utility",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": max(util_x, current_x),
-            "y": kit_y,
-            "w": util_w,
-            "h": util_h,
-            "has_window": True,
-            "exterior": True,
-        })
-
-        # -------------------------------------------------------------
-        # 4. Pooja Room / Niche (Ishanya - North-East Sector)
-        #    Must unconditionally seek NE sector, never in SW, never sharing wall with bath.
-        # -------------------------------------------------------------
-        pooja_w = 1.6 if ("3bhk" in u_type or "4bhk" in u_type or "penthouse" in u_type) else 1.2
-        pooja_h = 1.5 if ("3bhk" in u_type or "4bhk" in u_type or "penthouse" in u_type) else 1.0
-        pooja_x = round(current_x + unit_w - pooja_w, 2)
-        pooja_y = round(base_y, 2)
-
-        rooms.append({
-            "id": f"{uid}-pooja",
-            "name": "Pooja Room" if ("3bhk" in u_type or "4bhk" in u_type or "penthouse" in u_type) else "Pooja Niche",
-            "type": "pooja",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": pooja_x,
-            "y": pooja_y,
-            "w": pooja_w,
-            "h": pooja_h,
-            "has_window": True,
-            "exterior": True,
-            "vastu": "NE (Ishanya)",
-        })
-
-        # -------------------------------------------------------------
-        # 5. Living & Dining (Central / East Zone)
-        # -------------------------------------------------------------
-        liv_x = round(current_x + mbed_w + 0.2, 2) if is_north else round(current_x + 0.2, 2)
-        liv_y = round(base_y, 2)
-        liv_w = round(unit_w * 0.48, 2)
-        liv_h = round(unit_h * 0.50, 2)
-
-        rooms.append({
-            "id": f"{uid}-living",
-            "name": "Living & Dining",
-            "type": "living",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": liv_x,
-            "y": liv_y,
-            "w": liv_w,
-            "h": liv_h,
-            "has_window": True,
-            "balcony_attached": True,
-            "exterior": True,
-        })
-
-        # Projecting Main Balcony or Wrap-around Terrace
-        balc_h = 2.4 if is_top_floor else 1.6
-        balc_y = round((base_y - balc_h) if is_north else (base_y + unit_h), 2)
-        rooms.append({
-            "id": f"{uid}-balcony",
-            "name": "Wrap-around Terrace" if is_top_floor else "Main Balcony",
-            "type": "terrace" if is_top_floor else "balcony",
-            "unit_id": uid,
-            "unit_type": u["type"],
-            "unit_index": idx,
-            "x": liv_x,
-            "y": balc_y,
-            "w": round(liv_w * (1.15 if is_top_floor else 0.9), 2),
-            "h": balc_h,
-            "has_window": False,
-            "exterior": True,
-        })
-
-        # -------------------------------------------------------------
-        # 6. Additional Bedrooms & Amenities (2BHK, 3BHK, 4BHK, 5BHK)
-        # -------------------------------------------------------------
-        # Secondary Bed in East / North-East perimeter
-        if "2bhk" in u_type or "3bhk" in u_type or "4bhk" in u_type or "penthouse" in u_type:
-            bed2_w = round(unit_w * 0.36, 2)
-            bed2_h = round(unit_h * 0.45, 2)
-            bed2_x = round(current_x + unit_w - bed2_w, 2)
-            bed2_y = round(base_y + pooja_h + 0.1, 2) if is_north else round(base_y, 2)
-
-            rooms.append({
-                "id": f"{uid}-bed2",
-                "name": "Sub-Master Bedroom" if ("3bhk" in u_type or "4bhk" in u_type) else "Bedroom 2",
-                "type": "bedroom",
-                "unit_id": uid,
-                "unit_type": u["type"],
-                "unit_index": idx,
-                "x": bed2_x,
-                "y": bed2_y,
-                "w": bed2_w,
-                "h": bed2_h,
-                "has_window": True,
-                "exterior": True,
-            })
-
-            # Common / Detached Bath clustered near shaft
-            cbath_w = round(bed2_w * 0.5, 2)
-            cbath_h = round(bed2_h * 0.4, 2)
-            rooms.append({
-                "id": f"{uid}-cbath",
-                "name": "Common Bathroom",
-                "type": "bathroom",
-                "unit_id": uid,
-                "unit_type": u["type"],
-                "unit_index": idx,
-                "x": bed2_x,
-                "y": round(bed2_y + bed2_h - cbath_h, 2),
-                "w": cbath_w,
-                "h": cbath_h,
-                "has_window": False,
-                "exterior": False,
-            })
-
-        # 3BHK+: Sub-Master balcony & Guest bedroom
-        if "3bhk" in u_type or "4bhk" in u_type or "penthouse" in u_type:
-            bed3_w = round(unit_w * 0.32, 2)
-            bed3_h = round(unit_h * 0.40, 2)
-            bed3_x = round(current_x + mbed_w + 0.1, 2)
-            bed3_y = round(base_y + unit_h - bed3_h, 2) if is_north else round(base_y + liv_h + 0.1, 2)
-
-            rooms.append({
-                "id": f"{uid}-bed3",
-                "name": "Kids / Guest Bedroom",
-                "type": "bedroom",
-                "unit_id": uid,
-                "unit_type": u["type"],
-                "unit_index": idx,
-                "x": bed3_x,
-                "y": bed3_y,
-                "w": bed3_w,
-                "h": bed3_h,
-                "has_window": True,
-                "exterior": True,
-            })
-
-        # 4BHK & Penthouse: Servant Room + Servant Bath (with dedicated service entry door)
-        if "4bhk" in u_type or "penthouse" in u_type:
-            serv_w = round(unit_w * 0.24, 2)
-            serv_h = round(unit_h * 0.32, 2)
-            serv_x = round(current_x + unit_w - serv_w, 2)
-            serv_y = round(base_y + unit_h - serv_h, 2)
-
-            rooms.append({
-                "id": f"{uid}-servant",
-                "name": "Servant Quarters (Service Entry)",
-                "type": "servant",
-                "unit_id": uid,
-                "unit_type": u["type"],
-                "unit_index": idx,
-                "x": serv_x,
-                "y": serv_y,
-                "w": serv_w,
-                "h": serv_h,
-                "has_window": True,
-                "exterior": True,
-            })
-
-        # Penthouse Extras: Dedicated Home Office & Family Lounge
-        if "penthouse" in u_type or is_top_floor:
-            office_w = round(unit_w * 0.28, 2)
-            office_h = round(unit_h * 0.34, 2)
-            rooms.append({
-                "id": f"{uid}-office",
-                "name": "Executive Home Office",
-                "type": "office",
-                "unit_id": uid,
-                "unit_type": u["type"],
-                "unit_index": idx,
-                "x": round(current_x + 0.1, 2),
-                "y": round(base_y + 0.1, 2) if not is_north else round(base_y + unit_h - office_h - 0.1, 2),
-                "w": office_w,
-                "h": office_h,
-                "has_window": True,
-                "exterior": True,
-            })
-
-        return unit_w + 0.5  # inter-unit party wall separation
-
-    # Layout North row
-    curr_x = 0.0
-    for idx, u in enumerate(north_units):
-        uid = f"unit-N{idx + 1}"
-        w_step = layout_unit(u, uid, idx, curr_x, is_north=True)
-        curr_x += w_step
-    north_total_w = curr_x
-
-    # Layout South row
-    curr_x = 0.0
-    for idx, u in enumerate(south_units):
-        uid = f"unit-S{idx + 1}"
-        w_step = layout_unit(u, uid, idx, curr_x, is_north=False)
-        curr_x += w_step
-    south_total_w = curr_x
-
-    # Add Central Spine Corridor
-    total_floor_w = max(north_total_w, south_total_w, 24.0)
+    total_floor_w = max(north_w, south_w, 12.0)
     rooms.append({
         "id": f"corridor-{floor}",
         "name": f"Central Spine Corridor (Floor {floor})",
         "type": "common",
-        "x": 0.0,
-        "y": round(corridor_y, 2),
-        "w": round(total_floor_w, 2),
-        "h": round(corridor_w, 2),
-        "has_window": True,
-        "exterior": True,
+        "x": 0.0, "y": round(corridor_y, 2),
+        "w": round(total_floor_w, 2), "h": round(corridor_w, 2),
+        "has_window": True, "exterior": True,
     })
 
-    # Run complete Vastu & MEP audit
-    vastu_report = audit_vastu_and_mep(rooms, floor, total_floors)
-    validation = {"vastu": vastu_report}
+    validation = {"vastu": audit_vastu_and_mep(rooms, floor, total_floors,
+                                               boxes=unit_boxes, meta=unit_meta)}
     return rooms, validation
 
 
@@ -692,7 +379,9 @@ async def generate_ai_floor_layout(tower: Dict[str, Any], floor: int) -> Tuple[L
 
     if not has_key:
         logger.info("No AI key configured; using Generative Architecture & Vastu Template engine.")
-        return generate_architectural_template(tower, floor)
+        rooms, validation = generate_architectural_template(tower, floor)
+        validation["vastu"]["source"] = "packer (no model key configured)"
+        return rooms, validation
 
     total_floors = max(int(tower.get("floors") or 1), 1)
     is_penthouse_floor = (floor == total_floors and total_floors >= 3)
@@ -818,10 +507,26 @@ JSON schema:
         data = json.loads(text)
         rooms = data.get("rooms", [])
         if rooms and len(rooms) >= 6:
+            # The model's plan is checked against the same hard rules the packer is held to,
+            # and is used only if it passes. A layout is geometry: overlapping rooms, a
+            # balcony off an internal wall or a pooja room walled against a bathroom are
+            # wrong whoever drew them, and a plausible-looking plan that fails them is worse
+            # than the deterministic one, because it looks considered.
             vastu_report = audit_vastu_and_mep(rooms, floor, total_floors)
-            return rooms, {"vastu": vastu_report}
+            if not vastu_report.get("violations"):
+                vastu_report["source"] = "model"
+                return rooms, {"vastu": vastu_report}
+            logger.info("AI floor plan rejected on %d hard rule(s): %s",
+                        len(vastu_report["violations"]), "; ".join(vastu_report["violations"][:3]))
+            rejected = vastu_report["violations"][:6]
+            rooms, validation = generate_architectural_template(tower, floor)
+            validation["vastu"]["source"] = "packer (model plan rejected)"
+            validation["vastu"]["rejected_model_plan"] = rejected
+            return rooms, validation
     except Exception as e:
         logger.warning(f"AI floor plan generation failed or timed out ({e}); using Generative Vastu Template engine.")
 
-    return generate_architectural_template(tower, floor)
+    rooms, validation = generate_architectural_template(tower, floor)
+    validation["vastu"]["source"] = "packer"
+    return rooms, validation
 

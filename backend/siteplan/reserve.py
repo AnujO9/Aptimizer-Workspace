@@ -5,15 +5,21 @@ Carves circulation and standalone amenity footprints out of the buildable envelo
 
 Order is deliberate and mirrors how a site plan is actually drawn:
 
-  1. Perimeter ring   — the fire-tender lifeline, hugging the envelope edge. Reserved
-                        first because it is non-negotiable.
-  2. Internal drives  — inserted only where the remaining core is deep enough to strand
-                        land beyond `road.max_distance_to_road` from a road.
-  3. Amenity blocks   — standalone low-rise footprints placed against the circulation
-                        network, the way a clubhouse sits on the approach road, rather
-                        than dropped in the middle where they would split the core.
+  1. Development blocks — the largest straight-sided rectangles the envelope can hold,
+                        laid out on the site's own grid. Roads are cut from these, which
+                        is what makes every corridor straight by construction rather than
+                        a curve that happens to be within tolerance. See `blocks.py`.
+  2. Perimeter ring   — the fire-tender lifeline, four straight bands around each block.
+  3. Internal drives  — full-span straight spines, added where the core is deep enough to
+                        strand land beyond `road.max_distance_to_road` from a road, or
+                        where a core deep enough for two rows of flats has no drive at all.
+  4. Amenity blocks   — the integrated clubhouse and anything else configured, placed
+                        against the circulation network the way a clubhouse sits on the
+                        approach road, rather than dropped in the middle where it would
+                        split the core.
 
-Whatever survives is the residual packable region handed to stage 3.
+Whatever survives is the residual packable region handed to stage 3. Land inside the
+envelope that no block could cover is landscape, and is reported as such.
 """
 import math
 from dataclasses import dataclass, field
@@ -24,6 +30,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from .blocks import BlockNetwork, RoadCorridor, build_network, corridors_to_dict
 from .config import AmenityBlock, SiteLayoutConfig
 from .envelope import EnvelopeResult, build_envelope
 from .errors import LayoutError
@@ -42,38 +49,37 @@ def _area(geom: Optional[BaseGeometry]) -> float:
     return float(geom.area) if geom is not None and not geom.is_empty else 0.0
 
 
-# ---------------------------------------------------------------- 1. perimeter ring
-def perimeter_ring(envelope: BaseGeometry,
-                   cfg: SiteLayoutConfig) -> Tuple[BaseGeometry, BaseGeometry, List[str]]:
-    """Annulus of `road.ring_width` hugging the inside of the envelope.
+# ---------------------------------------------------------------- 1-3. straight network
+def road_network(envelope: BaseGeometry,
+                 cfg: SiteLayoutConfig) -> Tuple[Optional[BlockNetwork], List[str]]:
+    """Straight-sided development blocks with a rectangular ring and full-span spines.
 
-    Returns (ring, core, warnings) where `core` is what is left inside it.
+    Returns (network, warnings). A network of None means no usable rectangle fits inside
+    the envelope at all — the caller falls back to treating the envelope as one
+    undifferentiated packable region rather than inventing circulation for it.
     """
-    warnings: List[str] = []
-    if not cfg.road.enabled or cfg.road.ring_width <= 0:
-        return EMPTY, envelope, warnings
+    if not cfg.road.enabled:
+        return None, []
 
-    outer = envelope
-    if cfg.road.ring_offset > 0:
-        outer = _clean(envelope.buffer(-cfg.road.ring_offset), cfg)
-        if outer.is_empty:
-            warnings.append(
-                f"A {cfg.road.ring_offset} m ring offset consumes the whole envelope; "
-                "the offset was ignored.")
-            outer = envelope
-
-    core = _clean(outer.buffer(-cfg.road.ring_width), cfg)
-    ring = _clean(outer.difference(core) if not core.is_empty else outer, cfg)
-
-    if core.is_empty:
-        warnings.append(
-            f"The buildable envelope is narrower than the {cfg.road.ring_width} m access "
-            "ring, so the whole envelope is reserved for circulation and no land remains "
-            "for towers. Reduce the setbacks or the ring width.")
-    return ring, core, warnings
+    network = build_network(
+        envelope,
+        ring_width=max(cfg.road.ring_width, 0.0),
+        ring_offset=max(cfg.road.ring_offset, 0.0),
+        driveway_width=max(cfg.road.driveway_width, 0.0),
+        max_distance_to_road=max(cfg.road.max_distance_to_road, 0.0),
+        central_spine_min_core=max(cfg.road.central_spine_min_core, 0.0),
+        safety=cfg.setback_safety,
+        max_blocks=max(int(cfg.road.max_blocks), 1),
+        min_block_area=max(cfg.road.min_block_area, 0.0),
+        min_region_area=cfg.min_region_area,
+    )
+    if network is None:
+        return None, ["No straight-sided development block fits inside the buildable "
+                      "envelope, so no circulation was reserved."]
+    return network, list(network.warnings)
 
 
-# ---------------------------------------------------------------- 2. internal driveways
+# ---------------------------------------------------------------- shared helpers
 def _principal_axis(part: Polygon) -> Tuple[float, float, float]:
     """(angle of the long axis in degrees, long extent, short extent)."""
     rect = part.minimum_rotated_rectangle
@@ -91,62 +97,6 @@ def _principal_axis(part: Polygon) -> Tuple[float, float, float]:
     return angle, long_extent, short_extent
 
 
-def driveway_network(core: BaseGeometry,
-                     cfg: SiteLayoutConfig) -> Tuple[BaseGeometry, List[str]]:
-    """Spines through any core region deep enough to strand land away from a road.
-
-    Bands are cut parallel to the region's long axis and spaced so no band is wider than
-    `2 x max_distance_to_road` — every point then lies within that distance of either a
-    driveway or the perimeter ring bounding the core.
-    """
-    warnings: List[str] = []
-    reach = cfg.road.max_distance_to_road
-    width = cfg.road.driveway_width
-    if not cfg.road.enabled or width <= 0 or reach <= 0 or core.is_empty:
-        return EMPTY, warnings
-
-    spines: List[BaseGeometry] = []
-    for part in polygons_of(core):
-        # Nothing is stranded if eroding by the reach empties the part.
-        if part.buffer(-reach).is_empty:
-            continue
-
-        angle, _, short_extent = _principal_axis(part)
-        bands = max(1, math.ceil(short_extent / (2.0 * reach)))
-        n_lines = bands - 1
-        if n_lines <= 0:
-            continue
-
-        cx, cy = part.centroid.x, part.centroid.y
-        theta = math.radians(angle)
-        # Unit vectors along the long axis and across it.
-        ax, ay = math.cos(theta), math.sin(theta)
-        nx, ny = -ay, ax
-        reach_len = max(part.bounds[2] - part.bounds[0], part.bounds[3] - part.bounds[1]) * 1.5
-
-        for i in range(n_lines):
-            offset = short_extent * ((i + 1) / bands - 0.5)
-            px, py = cx + nx * offset, cy + ny * offset
-            line = LineString([(px - ax * reach_len, py - ay * reach_len),
-                               (px + ax * reach_len, py + ay * reach_len)])
-            seg = line.intersection(part)
-            if seg.is_empty:
-                continue
-            spines.append(seg.buffer(width / 2.0, cap_style="flat",
-                                     quad_segs=cfg.buffer_quad_segs))
-
-    if not spines:
-        return EMPTY, warnings
-
-    drives = unary_union(spines).intersection(core)
-    drives = _clean(drives, cfg)
-    if not drives.is_empty:
-        warnings.append(
-            f"Added internal driveways so no buildable land sits more than {reach:.0f} m "
-            "from a road.")
-    return drives, warnings
-
-
 # ---------------------------------------------------------------- 3. amenities
 @dataclass
 class AmenityPlacement:
@@ -159,10 +109,16 @@ class AmenityPlacement:
     height_m: float
     floors: int
     requested_area_sqm: float
+    programme: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def area_sqm(self) -> float:
         return self.polygon.area
+
+    @property
+    def gross_floor_area_sqm(self) -> float:
+        """Accommodation the block actually delivers — the point of stacking it."""
+        return self.area_sqm * max(int(self.floors), 1)
 
 
 def resolve_amenity_size(block: AmenityBlock, plot_area: float) -> Optional[Tuple[float, float, float]]:
@@ -182,6 +138,10 @@ def resolve_amenity_size(block: AmenityBlock, plot_area: float) -> Optional[Tupl
         area = plot_area * float(block.plot_area_pct) / 100.0
     if not area or area <= 0:
         return None
+    if block.min_area_sqm and area < float(block.min_area_sqm):
+        area = float(block.min_area_sqm)
+    if block.max_area_sqm and area > float(block.max_area_sqm):
+        area = float(block.max_area_sqm)
     aspect = max(float(block.aspect or 1.0), 0.1)
     w = math.sqrt(area * aspect)
     return w, area / w, area
@@ -326,7 +286,8 @@ def place_amenities(region: BaseGeometry, roads: BaseGeometry, plot_area: float,
             key=block.key, name=block.name, polygon=rect,
             width_m=round(w, 2), depth_m=round(d, 2),
             rotation_deg=0.0, height_m=block.height_m, floors=block.floors,
-            requested_area_sqm=round(requested, 2)))
+            requested_area_sqm=round(requested, 2),
+            programme=[dict(p) for p in (block.programme or []) if isinstance(p, dict)]))
         region = _clean(region.difference(rect.buffer(cfg.amenities.clearance)), cfg)
 
     return placed, region, warnings
@@ -387,12 +348,21 @@ class ReserveResult:
     amenities: List[AmenityPlacement]
     residual: BaseGeometry
     green: BaseGeometry = EMPTY
+    network: Optional[BlockNetwork] = None
     warnings: List[str] = field(default_factory=list)
 
     @property
     def roads(self) -> BaseGeometry:
         parts = [g for g in (self.ring, self.driveways) if g is not None and not g.is_empty]
         return unary_union(parts) if parts else EMPTY
+
+    @property
+    def corridors(self) -> List[RoadCorridor]:
+        return self.network.corridors if self.network else []
+
+    @property
+    def blocks(self) -> List[Polygon]:
+        return self.network.blocks if self.network else []
 
     def to_dict(self) -> Dict[str, Any]:
         frame = self.envelope.frame
@@ -414,6 +384,22 @@ class ReserveResult:
                 "driveway_polygons": geom_to_latlng(self.driveways, frame),
                 "ring_polygons_local": geom_to_local(self.ring),
                 "driveway_polygons_local": geom_to_local(self.driveways),
+                # Every corridor as its own straight rectangle plus the centreline it was
+                # set out from. A renderer that has to infer a centreline from a polygon
+                # gets it wrong the moment the polygon is not the shape it assumed, which
+                # is why the engine states it rather than leaving it to be guessed.
+                "corridors": corridors_to_dict(self.corridors, frame),
+                "centrelines_local": [
+                    [[round(x, 3), round(y, 3)] for x, y in c.centreline.coords]
+                    for c in self.corridors
+                ],
+                "grid_angle_deg": self.network.angle_deg if self.network else 0.0,
+            },
+            "blocks": {
+                "count": len(self.blocks),
+                "area_sqm": round(sum(b.area for b in self.blocks), 2),
+                "polygons": geom_to_latlng(unary_union(self.blocks) if self.blocks else EMPTY, frame),
+                "polygons_local": geom_to_local(unary_union(self.blocks) if self.blocks else EMPTY),
             },
             "amenities": [
                 {
@@ -422,6 +408,8 @@ class ReserveResult:
                     "requested_area_sqm": a.requested_area_sqm,
                     "width_m": a.width_m, "depth_m": a.depth_m,
                     "height_m": a.height_m, "floors": a.floors,
+                    "gross_floor_area_sqm": round(a.gross_floor_area_sqm, 2),
+                    "programme": a.programme,
                     "polygons": geom_to_latlng(a.polygon, frame),
                     "polygons_local": geom_to_local(a.polygon),
                 }
@@ -459,12 +447,29 @@ def reserve(env: EnvelopeResult, cfg: Optional[SiteLayoutConfig] = None) -> Rese
     cfg = cfg or env.config
     warnings: List[str] = []
 
-    ring, core, w = perimeter_ring(env.envelope, cfg)
+    network, w = road_network(env.envelope, cfg)
     warnings += w
 
-    drives, w = driveway_network(core, cfg)
-    warnings += w
-    residual = _clean(core.difference(drives), cfg) if not drives.is_empty else core
+    if network is None:
+        ring = drives = EMPTY
+        residual = env.envelope
+        leftover: BaseGeometry = EMPTY
+    else:
+        ring = _clean(network.ring_geometry, cfg)
+        drives = _clean(network.spine_geometry, cfg)
+        residual = _clean(network.residual, cfg)
+        leftover = _clean(network.leftover, cfg)
+        if residual.is_empty and not network.residual.is_empty:
+            # The ring fitted, so _serve_block had nothing to complain about, but what it
+            # left inside is too small to be a region and _clean drops it. Saying nothing
+            # here returns an empty packable area with every warning pointing somewhere
+            # else -- the reader concludes the packer failed, when the truth is the site
+            # never had room for one.
+            warnings.append(
+                f"The land inside the {cfg.road.ring_width:g} m access ring is only "
+                f"{network.residual.area:.0f} m2, below the {cfg.min_region_area:g} m2 "
+                f"minimum usable region, so nothing remains for towers. Reduce the "
+                f"setbacks or the ring width.")
 
     roads = unary_union([g for g in (ring, drives) if not g.is_empty]) if (
         not ring.is_empty or not drives.is_empty) else EMPTY
@@ -475,9 +480,14 @@ def reserve(env: EnvelopeResult, cfg: Optional[SiteLayoutConfig] = None) -> Rese
     green, residual, w = reserve_green(residual, env.plot.area, cfg)
     warnings += w
 
+    # Envelope land no development block could cover is not a leftover to be quietly
+    # ignored — it is where the scheme's landscaping goes, so it joins the green.
+    if not leftover.is_empty:
+        green = _clean(unary_union([g for g in (green, leftover) if not g.is_empty]), cfg)
+
     result = ReserveResult(envelope=env, ring=ring, driveways=drives,
                            amenities=amenities, residual=residual, green=green,
-                           warnings=warnings)
+                           network=network, warnings=warnings)
 
     # Stage 1's containment guarantee must survive stage 2: everything reserved, and the
     # residual handed to packing, still lives inside the envelope.

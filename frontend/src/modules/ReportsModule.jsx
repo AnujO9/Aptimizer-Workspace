@@ -6,28 +6,35 @@ import { AiPanel } from "../components/AiPanel";
 import { Button } from "../components/ui/button";
 import { int, money, num } from "../lib/format";
 
-// The reports page mirrors the workspace menu: same group order, same group labels, so a
-// reader looking for "the parking numbers" goes to the group they already navigate by.
+// The reports page mirrors the workspace menu: same group order, same group labels, one
+// report per module, so a reader looking for "the parking numbers" goes to the group they
+// already navigate by and finds a document named after the page they navigate by.
 //
-// Three things the menu has that no longer have a document of their own -- Plot &
-// Setbacks, Apartment Planning, Parking -- were merged into other reports rather than kept
-// as thin duplicates. Each group says where its numbers went instead of showing an empty
-// heading, because an unexplained gap reads as something missing.
+// Every report opens with its own Report Summary — the finding, before the workings — so
+// a reader who only wants the outcome does not have to reconstruct it from six tables.
+//
+// Two menu entries have no document of their own on purpose. Versions & Team is the audit
+// trail of the project rather than a result of it, and Reports is this page. Everything
+// else is here.
 const REPORT_GROUPS = [
   ["site", "Site", [
-    ["plot", "Plot & Setbacks", "Boundary, area, road edges and setbacks against their limits"],
-    ["site", "Site Analysis", "Terrain, flood risk, access, sun path, suitability and solar potential"],
+    ["plot", "Plot & Setbacks", "Boundary, area, road edges and setbacks against their NBC minimums"],
+    ["site", "Site Analysis", "Terrain, flood, wind, access, sun path, context, suitability, buildability and rooftop solar"],
   ], ""],
 
-  ["design", "Design", [],
-   "Apartment planning and parking are in the Executive Summary — neither filled a report on its own."],
+  ["design", "Design", [
+    ["planning", "Apartment Planning & Vastu", "Unit mix, per-tower programme, society amenities and the Vastu audit of every generated floor plate"],
+    ["parking", "Parking", "The governing norm, per-building demand, supply efficiency, ramp geometry and every parking check"],
+    ["layout", "Site Layout & Massing", "Land budget, placed blocks, reserved amenities, circulation and the layout's fitness"],
+  ], ""],
 
   ["eng", "Engineering", [
+    ["calculations", "Area & FAR Calculations", "Carpet to built-up to saleable, step by step, and the FAR and FSI that fall out of it"],
     ["engineering", "IS / NBC Engineering Summary", "Seismic, foundation, mix, water, fire, accessibility, carbon and plantation"],
     ["structural", "Structural Design Basis", "IS 875 loads, IS 1893 base shear, foundation, mix design, column grid"],
-    ["water", "Water & Sanitation", "IS 1172 demand, sump and OHT, STP, storm drainage, RWH and plant rooms"],
+    ["water", "Water & Sanitation", "IS 1172 demand build-up, sump and OHT, STP, storm drainage, RWH and plant rooms"],
     ["fire", "Fire & Life Safety", "NBC Part 4 clause-by-clause checks with a per-floor checklist"],
-    ["sustainability", "Sustainability & Carbon", "Green rating, embodied carbon by material, plantation plan and rooftop solar"],
+    ["sustainability", "Sustainability & Carbon", "Green rating, embodied carbon by material, plantation plan and the rooftop solar offset"],
   ], ""],
 
   ["commercial", "Cost & Programme", [
@@ -38,7 +45,8 @@ const REPORT_GROUPS = [
 
   ["deliver", "Deliver", [
     ["compliance", "Compliance Validation", "Rule-by-rule pass/fail, including accessibility and development controls"],
-    ["executive", "Executive Summary", "The roll-up of everything above: scale, cost, compliance, parking and site"],
+    ["datahealth", "Data Reliability", "Whether the inputs behind every figure above are complete, fresh and self-consistent"],
+    ["executive", "Executive Summary", "The roll-up of everything above: scale, cost, compliance, parking, site, layout, Vastu and data reliability"],
   ], ""],
 ];
 
@@ -79,7 +87,8 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[11px] text-slate-500 max-w-xl">
-          Twelve reports, grouped as in the menu.
+          {REPORTS.length} reports, one per module, grouped and ordered as in the menu.
+          Each opens with a Report Summary — its own finding, before its workings.
         </p>
         <Button
           className="rounded-sm"
@@ -91,14 +100,23 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
         </Button>
       </div>
 
-      {REPORT_GROUPS.map(([gid, label, items, note]) => (
+      {REPORT_GROUPS.map(([gid, label, items, note]) => {
+        // The workbook is an extra card in the commercial group, so it counts towards
+        // whether the last row is short. A group with an odd number of cards would
+        // otherwise leave a grey half-row under the final one; letting that card span
+        // both columns fills it instead.
+        const cards = items.length + (gid === "commercial" ? 1 : 0);
+        const wide = cards % 2 === 1 ? "md:col-span-2" : "";
+        return (
         <div key={gid} className="space-y-2" data-testid={`report-group-${gid}`}>
           <h3 className="text-[11px] uppercase tracking-wider text-slate-500">{label}</h3>
           {note && <p className="text-[11px] text-slate-500">{note}</p>}
           {items.length > 0 && (
             <div className="grid gap-px bg-slate-200 border border-slate-200 md:grid-cols-2">
-              {items.map(([key, title, desc]) => (
-                <div key={key} className="bg-white p-4 flex items-start justify-between gap-4"
+              {items.map(([key, title, desc], i) => (
+                <div key={key}
+                  className={`bg-white p-4 flex items-start justify-between gap-4 ${
+                    gid !== "commercial" && i === items.length - 1 ? wide : ""}`}
                   data-testid={`report-card-${key}`}>
                   <div>
                     <h4 className="text-sm font-semibold tracking-tight">{title}</h4>
@@ -114,7 +132,7 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
               ))}
               {/* The workbook belongs beside the BOQ report it duplicates in Excel form. */}
               {gid === "commercial" && (
-                <div className="bg-white p-4 flex items-start justify-between gap-4"
+                <div className={`bg-white p-4 flex items-start justify-between gap-4 ${wide}`}
                   data-testid="report-card-boq-excel">
                   <div>
                     <h4 className="text-sm font-semibold tracking-tight">BOQ Workbook</h4>
@@ -133,7 +151,8 @@ export default function ReportsModule({ project, analysis, projectId, readOnly, 
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
 
       <AiPanel
         title="AI executive summary"

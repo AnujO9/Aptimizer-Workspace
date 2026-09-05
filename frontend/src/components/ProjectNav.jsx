@@ -49,6 +49,7 @@ const DESCRIPTIONS = {
   programme: "CPM schedule, float and the build duration",
   finance: "Revenue, margin, ROI and the break-even point",
   compliance: "Rule-by-rule check against the applicable controls",
+  "data-health": "Whether the inputs behind every number still hold up",
   reports: "Issue the drawings, schedules and summaries",
   collaboration: "Saved versions, access roles and the team",
 };

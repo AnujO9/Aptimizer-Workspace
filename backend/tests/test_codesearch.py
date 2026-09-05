@@ -18,7 +18,7 @@ The corpus under tests/fixtures/codes_corpus is invented too, for the copyright 
 its README sets out. Clause numbers, headings, tables and constants there are fabrications
 in the shape of an Indian standard, which is all a retrieval test needs.
 """
-import sys, os, json, re
+import sys, os, json, re, shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import Any, Dict, List, Sequence
 
@@ -338,3 +338,59 @@ def test_an_index_built_with_another_embedding_model_is_refused(indexed, embedde
     hits = codesearch.search("travel distance to a protected stair")
     assert hits and all(h["degraded"] is True for h in hits)
     assert embedder.questions == [], "a refused index must not embed the query either"
+
+
+_BEFORE = """4.3.2 Travel Distance
+
+The travel distance from any point on a floor to the nearest exit shall not exceed 22.5 m
+in a residential occupancy fitted with sprinklers, measured along the actual path of travel
+and not in a straight line across the floor plate.
+"""
+
+# Words that appear only in the clause the rebuild adds, and that no synonym key expands,
+# so what this test measures is whether the new index was picked up, and nothing else.
+_NEW_CLAUSE_QUERY = "handrail projection"
+
+_AFTER = _BEFORE + """
+
+4.3.3 Width of Exits
+
+The clear width of any exit staircase shall be not less than 1000 mm for a residential
+occupancy, measured between the finished faces of the enclosing walls and clear of any
+handrail projection exceeding 100 mm.
+"""
+
+
+def test_a_rebuilt_index_is_picked_up_without_restarting_the_process(embedder, tmp_path,
+                                                                     monkeypatch):
+    """The index is cached for the life of the process, and a rebuild has to reach it.
+
+    An operator who adds a standard and runs the builder gets no new answers until somebody
+    restarts uvicorn -- and from the outside that is indistinguishable from a build that
+    silently failed, which is the one thing this module works hardest never to look like.
+    The load is keyed on the manifest that build() replaces, so the next query notices.
+
+    The rebuild is staged into a second directory and copied over the live one, because
+    that is what the case actually is: the builder runs as its own process, and the process
+    holding the stale copy in memory is the one that never called clear_cache(). Calling it
+    here would test the fixture instead of the behaviour.
+    """
+    corpus, live, staged = tmp_path / "corpus", tmp_path / "index", tmp_path / "staged"
+    corpus.mkdir()
+    monkeypatch.setenv("CODES_CORPUS_DIR", str(corpus))
+    monkeypatch.setenv("CODES_INDEX_DIR", str(live))
+    monkeypatch.setenv("GEMINI_EMBED_MODEL", FIXTURE_MODEL)
+
+    (corpus / "nbc4.txt").write_text(_BEFORE, encoding="utf-8")
+    codesearch.build()
+    assert codesearch.search(_NEW_CLAUSE_QUERY, k=5) == []      # loads and caches the index
+
+    (corpus / "nbc4.txt").write_text(_AFTER, encoding="utf-8")
+    codesearch.build(out_dir=str(staged))                       # the builder, run elsewhere
+    assert codesearch.search(_NEW_CLAUSE_QUERY, k=5) == []      # caches the live index again
+    for name in os.listdir(staged):
+        shutil.copy2(os.path.join(staged, name), os.path.join(live, name))
+
+    hits = codesearch.search(_NEW_CLAUSE_QUERY, k=5)
+    assert any(h["clause"] == "Cl. 4.3.3" for h in hits), \
+        "the process is still answering out of the index it loaded first"

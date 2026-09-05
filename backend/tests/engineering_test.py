@@ -9,12 +9,55 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://aptimizer-build.preview.emergentagent.com").rstrip("/")
+# Defaults to the local dev server. The previous default was a preview deployment
+# that no longer exists and answers 404, so these modules skipped everywhere and
+# gated nothing -- a dead default is worse than no default, because it looks live.
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 API = f"{BASE}/api"
-ADMIN = {"email": "admin@aptimizer.com", "password": "Admin@123"}
+# Read from the environment the server itself reads, so these follow the deployment
+# instead of a literal that stops matching the moment ADMIN_PASSWORD is changed --
+# which does not fail as a wrong password, it fails as a 429 lockout five attempts
+# later, and that is a much harder thing to read off a test report.
+ADMIN = {"email": os.environ.get("ADMIN_EMAIL", "admin@aptimizer.com"),
+         "password": os.environ.get("ADMIN_PASSWORD", "Admin@123")}
+
+# This module drives a DEPLOYED backend over HTTP, not the in-process TestClient the rest
+# of the suite uses. Without a reachable deployment every test in it fails on a 404 from
+# whatever host the default URL points at — which for a long time made a clean run look
+# like thirteen broken features, and meant the suite could not gate anything. Point
+# REACT_APP_BACKEND_URL at a running server to run these; otherwise they skip, because a
+# test that cannot reach its subject has not found a defect.
+pytestmark = pytest.mark.e2e
+
+try:
+    _probe = requests.get(f"{API}/", timeout=5)
+    # The API root answers 200 when a real backend is behind the URL. A 404 here is a
+    # proxy or a parked domain replying for a deployment that is gone — reachable in the
+    # TCP sense and useless in every other, which is exactly the case this guards.
+    _reachable = _probe.status_code == 200
+except Exception as _exc:                                    # noqa: BLE001
+    _reachable = False
+    _why = _exc
+else:
+    _why = f"HTTP {_probe.status_code}"
+if not _reachable:
+    pytest.skip(f"No backend at {BASE} ({_why}) — set REACT_APP_BACKEND_URL to run these",
+                allow_module_level=True)
 
 MODULE_IDS = ["loads", "seismic", "foundation", "mix", "water", "storm",
-              "parking_nbc", "fire", "accessibility", "green", "grid"]
+              "parking_nbc", "fire", "accessibility", "green", "grid", "carbon", "trees"]
+
+# Every module cites the clause behind each number it reports; that is the whole point of
+# the engineering layer, and this list is the one exemption.
+#
+# `trees` is governed by municipal building bye-laws and the National Forest Policy 1988.
+# Neither is a BIS or NBC designation, so the clause registry cannot carry one and a
+# reference there would have to be invented -- which is the failure the citation guard
+# exists to prevent, not a gap to paper over.
+#
+# Named explicitly rather than inferred from a module's `codes`, so that a NEW module
+# arriving with no clauses fails this test instead of quietly qualifying for the exemption.
+CLAUSE_EXEMPT = {"trees"}
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +110,16 @@ def test_all_modules_present(eng):
 
 def test_every_output_has_clause_reference(eng):
     for mid, m in eng["modules"].items():
-        for o in m.get("outputs", []) + m.get("checks", []):
+        outputs = m.get("outputs", []) + m.get("checks", [])
+        if mid in CLAUSE_EXEMPT:
+            # All-or-nothing, deliberately: a module that is exempt because no standard
+            # governs it must be uniformly clause-less. A partial set means a reference was
+            # dropped from a module that used to carry them, which is a regression.
+            assert all(o["clause"] is None for o in outputs), (
+                f"{mid} is clause-exempt, so every output must be; a mixed set means one "
+                f"was lost rather than never present")
+            continue
+        for o in outputs:
             assert o["clause"], f"{mid} → {o['label']} has no clause"
             assert o["clause"]["code"] and o["clause"]["clause"]
 
@@ -254,10 +306,16 @@ def test_code_library_search(q, expect):
 def test_every_clause_deeplink_resolves(eng):
     ids = {e["id"] for e in requests.get(f"{API}/iscodes", timeout=30).json()["entries"]}
     seen = set()
-    for m in eng["modules"].values():
+    for mid, m in eng["modules"].items():
         refs = [o["clause"] for o in m.get("outputs", []) + m.get("checks", [])]
         refs += [m["recommendation"]["clause"]] if m.get("recommendation") else []
         for c in refs:
+            if c is None:
+                # Only where no standard governs the module. Anywhere else this is the
+                # missing citation the previous test already failed on, and walking into
+                # it here would report an AttributeError instead of the real finding.
+                assert mid in CLAUSE_EXEMPT, f"{mid} has an output with no clause"
+                continue
             assert c.get("library_id"), f"{c['code']} has no library deep-link"
             assert c["library_id"] in ids
             seen.add(c["library_id"])

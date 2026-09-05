@@ -20,6 +20,9 @@ const COLORS = {
   servant: "#F8FAFC",
   shaft: "#E2E8F0",
   pantry: "#FFFBEB",
+  // Circulation inside a flat. Kept the same slate as the shared corridor so a plan reads
+  // as one connected route from the lift lobby to a bedroom door, not two unrelated greys.
+  passage: "#F1F5F9",
 };
 
 export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {

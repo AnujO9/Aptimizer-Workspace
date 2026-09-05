@@ -29,21 +29,41 @@ class SetbackConfig:
 
 @dataclass
 class RoadConfig:
-    """Circulation reserved inside the envelope before any tower is placed."""
+    """Circulation reserved inside the envelope before any tower is placed.
+
+    Every corridor is a straight rectangle cut from a straight-sided development block —
+    see `siteplan/blocks.py` for why a road that follows the plot boundary is the wrong
+    answer even when it is geometrically valid.
+    """
     enabled: bool = True
     ring_width: float = 6.0          # perimeter access ring — NBC fire-tender minimum
     ring_offset: float = 0.0         # gap between envelope edge and outer face of the ring
     driveway_width: float = 4.5      # internal spurs linking clusters to the ring
     max_distance_to_road: float = 45.0   # a tower further than this counts as unreachable
+    # A core deep enough for two rows of flats gets one central drive even when every
+    # point of it is already within reach of the ring: it is what the surface bays line,
+    # and without it the middle of the block is a field no car can stop in. 0 disables.
+    central_spine_min_core: float = 45.0
+    # An irregular plot cannot be covered by one rectangle without abandoning land, so the
+    # envelope is tiled with up to this many straight-sided blocks, largest first.
+    max_blocks: int = 3
+    min_block_area: float = 900.0    # below this a leftover rectangle is landscape, not a block
 
 
 @dataclass
 class AmenityBlock:
-    """A standalone low-rise footprint — never part of a tower, own height parameter.
+    """A standalone community footprint — never part of a tower, own height parameter.
 
     Size comes from exactly one of `dimensions` (explicit w x d in metres), `area_sqm`
     (explicit footprint area, packed to `aspect`), or `plot_area_pct` (a share of the
     plot). Resolution order is dimensions -> area_sqm -> plot_area_pct.
+
+    `programme` distributes the facilities over the block's storeys. Scattering a gym, a
+    pool and a clubhouse across the site as three separate single-storey pavilions costs
+    three footprints, three sets of services and three approach roads for the same
+    accommodation one stacked building provides — and every square metre of ground it
+    saves is open space the flats get back. So the facilities are levels of one building,
+    and this is the list of them.
     """
     key: str
     name: str
@@ -53,13 +73,48 @@ class AmenityBlock:
     area_sqm: Optional[float] = None
     plot_area_pct: Optional[float] = None
     aspect: float = 1.6              # w:d used when only an area is given
+    # Clamps applied after sizing. A percentage of plot area is the right shape of
+    # rule for a small scheme and absurd for a township — 3% of 6 ha is a 1.8 ha
+    # clubhouse — so the percentage sets the intent and these set the sane range.
+    min_area_sqm: Optional[float] = None
+    max_area_sqm: Optional[float] = None
+    # [{level, name, facilities: [...], open_air: bool}] — level 0 is the ground floor and
+    # level == floors is the roof. Plain dicts so `asdict` round-trips through the API.
+    programme: Optional[List[Dict[str, Any]]] = None
+
+
+def _clubhouse_programme() -> List[Dict[str, Any]]:
+    """Facilities of the integrated clubhouse, ground up. Roof carries the pool."""
+    return [
+        {"level": 0, "name": "Ground floor",
+         "facilities": ["Entrance lobby & reception", "Multipurpose community hall",
+                        "Creche & toddlers' room", "Convenience store", "Society office"],
+         "open_air": False},
+        {"level": 1, "name": "First floor",
+         "facilities": ["Gymnasium", "Aerobics & yoga studio", "Changing rooms",
+                        "Physiotherapy / spa"],
+         "open_air": False},
+        {"level": 2, "name": "Second floor",
+         "facilities": ["Indoor games — table tennis, billiards, carrom", "Library & reading room",
+                        "Co-working lounge", "Home theatre"],
+         "open_air": False},
+        {"level": 3, "name": "Third floor",
+         "facilities": ["Banquet hall & party lawn deck", "Cafe & pantry", "Guest suites"],
+         "open_air": False},
+        {"level": 4, "name": "Roof terrace",
+         "facilities": ["Swimming pool", "Kids' splash pool", "Pool deck & sun loungers",
+                        "Open-air barbecue"],
+         "open_air": True},
+    ]
 
 
 def _default_amenities() -> List[AmenityBlock]:
+    """One integrated clubhouse rather than a scatter of single-purpose pavilions."""
     return [
-        AmenityBlock("clubhouse", "Clubhouse", height_m=7.5, floors=2, plot_area_pct=2.5),
-        AmenityBlock("gym", "Gymnasium", height_m=4.5, floors=1, plot_area_pct=0.8),
-        AmenityBlock("pool", "Swimming Pool", height_m=1.5, floors=1, plot_area_pct=1.4, aspect=2.2),
+        AmenityBlock("clubhouse", "Integrated Community Clubhouse",
+                     height_m=14.0, floors=4, plot_area_pct=3.0, aspect=1.6,
+                     min_area_sqm=240.0, max_area_sqm=1200.0,
+                     programme=_clubhouse_programme()),
     ]
 
 

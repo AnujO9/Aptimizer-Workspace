@@ -63,6 +63,64 @@ def default_tower(name="Tower A"):
     return tower
 
 
+def _tower_letter(i):
+    return f"Tower {chr(65 + i)}" if i < 26 else f"Tower {i + 1}"
+
+
+def apply_layout_to_tower(tower, engine_tower, name):
+    """Stamp one packed block's geometry onto the project tower that represents it.
+
+    Only the things the site layout engine decides -- how tall the building is and how big
+    its plate is -- are overwritten. The unit mix, cores, corridors and generated room
+    layouts belong to the user and are carried across untouched.
+    """
+    floors = max(int(engine_tower.get("floors") or tower.get("floors") or 1), 1)
+    tower["name"] = name
+    tower["floors"] = floors
+
+    fh = engine_tower.get("floor_height_m")
+    if fh:
+        tower["floor_height"] = round(float(fh), 3)
+    footprint = engine_tower.get("footprint_sqm")
+    if footprint:
+        tower["footprint_area"] = round(float(footprint), 2)
+
+    # Stored plans above the new top floor describe floors that no longer exist. Leaving
+    # them behind lets the planner open floor 22 of a 14-storey building.
+    layouts = tower.get("floor_layouts") or {}
+    tower["floor_layouts"] = {k: v for k, v in layouts.items()
+                              if str(k).isdigit() and 1 <= int(k) <= floors}
+    tower["from_site_layout"] = True
+    return tower
+
+
+def towers_from_site_layout(existing, engine_towers):
+    """Reconcile the project's tower list with what the site layout engine packed.
+
+    The engine is the authority on how many buildings the land takes and how many floors
+    each one carries, so its count and heights win. Everything inside a tower is the
+    user's, so an existing tower is matched to a packed block -- by name first, then by
+    position -- and reused rather than replaced. Blocks with no counterpart get a fresh
+    default tower; project towers the engine did not pack are dropped.
+    """
+    existing = list(existing or [])
+    taken = set()
+    out = []
+    for i, et in enumerate(engine_towers or []):
+        name = et.get("name") or _tower_letter(i)
+        idx = next((j for j, t in enumerate(existing)
+                    if j not in taken and t.get("name") == name), None)
+        if idx is None and i < len(existing) and i not in taken:
+            idx = i
+        if idx is None:
+            tower = default_tower(name)
+        else:
+            taken.add(idx)
+            tower = dict(existing[idx])
+        out.append(apply_layout_to_tower(tower, et, name))
+    return out
+
+
 def _plot_jitter(seed_text, scale=0.0035):
     """Deterministic pseudo-offset (~up to ~350 m) derived from the plot reference / project name,
     so two projects in the same city don't land on the literal same default box. Not a real

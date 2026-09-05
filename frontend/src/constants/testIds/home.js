@@ -24,11 +24,18 @@ export const LANDING = {
 	metrics: 'landing-metrics',
 	metricValue: 'landing-metric-value',
 
+	workspace: 'landing-workspace',
+	workspaceGroup: 'landing-workspace-group',
+
 	pipeline: 'landing-pipeline',
 	pipelineStep: 'landing-pipeline-step',
 
 	modules: 'landing-modules',
 	moduleCard: 'landing-module-card',
+
+	intelligence: 'landing-intelligence',
+	intelligenceCard: 'landing-intelligence-card',
+	citationSample: 'landing-citation-sample',
 
 	traceability: 'landing-traceability',
 

@@ -183,7 +183,7 @@ export function AiPanel({
       description={description}
       testid={`${testid}-section`}
       actions={
-        <Button onClick={run} disabled={busy || blocked} className="rounded-sm h-8"
+        <Button onClick={run} disabled={busy || blocked} variant="ai" className="rounded-sm h-8"
           data-testid={`${testid}-button`}>
           <Sparkles className={`h-3.5 w-3.5 mr-1.5 ${busy ? "animate-pulse" : ""}`} />
           {busy ? "Generating…" : result ? "Regenerate" : buttonLabel}

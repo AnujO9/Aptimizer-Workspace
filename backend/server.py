@@ -30,6 +30,7 @@ import aptsuggest as suggestlib
 import citations as citelib
 import auth as authlib
 import codesearch as codesearchlib
+import datahealth as datahealthlib
 import engine
 import engineering as englib
 import finance as financelib
@@ -41,13 +42,23 @@ import layout as layoutlib
 import reports as reportlib
 import schedule as schedlib
 import siteplan as siteplanlib
-from defaults import default_project, default_tower, floor_layout_entry
+from defaults import (default_project, default_tower, floor_layout_entry,
+                      towers_from_site_layout)
 import aifloorplan
 
 client = AsyncIOMotorClient(os.environ['MONGO_URL'])
 db = client[os.environ['DB_NAME']]
 
-app = FastAPI(title="Aptimizer API")
+# The interactive docs publish the whole API surface -- every route, every schema, every
+# field name -- to anyone who opens /docs. The endpoints behind them still enforce auth, so
+# this is a map rather than a hole, but a public deployment has no reason to hand one out.
+# Off unless explicitly enabled, because the failure mode of the other default is silent:
+# nobody notices the docs are public until someone reads them.
+_API_DOCS = (os.environ.get("ENABLE_API_DOCS") or "").strip().lower() in {"1", "true", "yes", "on"}
+app = FastAPI(title="Aptimizer API",
+              docs_url="/docs" if _API_DOCS else None,
+              redoc_url="/redoc" if _API_DOCS else None,
+              openapi_url="/openapi.json" if _API_DOCS else None)
 api = APIRouter(prefix="/api")
 logger = logging.getLogger("aptimizer")
 
@@ -102,6 +113,10 @@ class ProjectIn(BaseModel):
 class ProjectPatch(BaseModel):
     updates: Dict[str, Any]
     note: Optional[str] = None
+    # The revision the client believes it is editing. Omitted by callers that predate the
+    # check, which then keep the old last-writer-wins behaviour rather than being locked
+    # out; a client that sends one gets a 409 instead of silently losing the other edit.
+    rev: Optional[int] = None
 
 
 class VersionIn(BaseModel):
@@ -276,6 +291,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(get_current_user)
                           latitude=body.latitude, longitude=body.longitude)
     doc["created_at"] = now_iso()
     doc["updated_at"] = now_iso()
+    doc["rev"] = 0
     res = await db.projects.insert_one(doc)
     await log_activity(str(res.inserted_id), user, "project.created", body.name)
     doc["_id"] = res.inserted_id
@@ -302,12 +318,38 @@ async def patch_project(project_id: str, body: ProjectPatch, user: dict = Depend
                # Setbacks live under dev_controls and are the one stored value the site
                # envelope is built from. It was in neither this set nor the frontend's
                # editable list, so every setback edit was silently discarded on reload.
-               "dev_controls"}
+               "dev_controls",
+               # The packed layout the 3D view and the site map both render. Same story:
+               # absent from this set, so it was regenerated from scratch every session
+               # and the freshness stamp it carries could never be checked against
+               # anything, because nothing was ever stored to check.
+               "site_layout"}
     updates = {k: v for k, v in body.updates.items() if k in allowed}
     if not updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
     updates["updated_at"] = now_iso()
-    await db.projects.update_one({"_id": oid(project_id)}, {"$set": updates})
+
+    # Optimistic concurrency.
+    #
+    # The values above are whole subtrees — `plot`, `towers`, `compliance_rules` — so the
+    # last writer used to replace the other's entire tower list, not just the field they
+    # touched. Two tabs, or two engineers on a shared project, silently overwrote each
+    # other. The filter now includes the revision the client started from, so a write onto
+    # a document that moved underneath it matches nothing and is reported instead.
+    query: Dict[str, Any] = {"_id": oid(project_id)}
+    if body.rev is not None:
+        query["rev"] = body.rev
+    res = await db.projects.update_one(query, {"$set": updates, "$inc": {"rev": 1}})
+    if res.matched_count == 0:
+        current = await db.projects.find_one({"_id": oid(project_id)})
+        if current is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(
+            status_code=409,
+            detail=f"This project was changed by someone else while you were editing "
+                   f"(you had revision {body.rev}, it is now {current.get('rev', 0)}). "
+                   f"Your view has been refreshed — reapply your change.")
+
     await log_activity(project_id, user, "project.updated",
                        body.note or ", ".join(k for k in updates if k != "updated_at"))
     proj = await db.projects.find_one({"_id": oid(project_id)})
@@ -525,9 +567,54 @@ async def add_tower(project_id: str, user: dict = Depends(get_current_user)):
     tower = default_tower(f"Tower {chr(65 + len(towers))}")
     towers.append(tower)
     await db.projects.update_one({"_id": oid(project_id)},
-                                 {"$set": {"towers": towers, "updated_at": now_iso()}})
+                                 {"$inc": {"rev": 1}, "$set": {"towers": towers, "updated_at": now_iso()}})
     await log_activity(project_id, user, "tower.added", tower["name"])
-    return {"tower": tower, "towers": towers}
+    fresh = await db.projects.find_one({"_id": oid(project_id)}, {"rev": 1})
+    return {"tower": tower, "towers": towers, "rev": (fresh or {}).get("rev")}
+
+
+class SyncTowersIn(BaseModel):
+    # The layout the caller just computed. Optional: without it the stored one is used.
+    # It is accepted because the modules that generate a layout hold it locally for a
+    # debounce before autosave writes it, and syncing off the stale stored copy would
+    # rebuild the towers from the previous run.
+    site_layout: Optional[Dict[str, Any]] = None
+
+
+@api.post("/projects/{project_id}/towers/sync-from-layout")
+async def sync_towers_from_layout(project_id: str, body: SyncTowersIn = SyncTowersIn(),
+                                  user: dict = Depends(get_current_user)):
+    """Rebuild the project's towers from the site layout engine's packed blocks.
+
+    The engine already decides how many buildings fit inside the setback envelope and how
+    many floors each carries; this makes Apartment Planning and the 3D model read those
+    numbers instead of a hand-kept list that drifts away from them.
+    """
+    proj = await load_project(project_id, user, write=True)
+    layout = body.site_layout or proj.get("site_layout") or {}
+    engine_towers = layout.get("towers") or []
+    if not engine_towers:
+        raise HTTPException(status_code=400,
+                            detail="No site layout to sync from. Generate the layout in "
+                                   "Plot & Setbacks first.")
+
+    before = proj.get("towers") or []
+    towers = towers_from_site_layout(before, engine_towers)
+    updates = {"towers": towers, "updated_at": now_iso()}
+    if body.site_layout:
+        updates["site_layout"] = body.site_layout
+    await db.projects.update_one({"_id": oid(project_id)}, {"$inc": {"rev": 1}, "$set": updates})
+    await log_activity(project_id, user, "towers.synced_from_layout",
+                       f"{len(towers)} tower(s) from site layout")
+    fresh = await db.projects.find_one({"_id": oid(project_id)}, {"rev": 1})
+    return {
+        "towers": towers,
+        "tower_count": len(towers),
+        "added": max(len(towers) - len(before), 0),
+        "removed": max(len(before) - len(towers), 0),
+        "floors": [t["floors"] for t in towers],
+        "rev": (fresh or {}).get("rev"),
+    }
 
 
 # ---------------------------------------------------------------- per-floor room layout
@@ -582,7 +669,7 @@ async def floor_layout(project_id: str, tower_id: str, body: FloorLayoutIn,
         tower["rooms"] = entry["rooms"]
 
     await db.projects.update_one({"_id": oid(project_id)},
-                                 {"$set": {"towers": towers, "updated_at": now_iso()}})
+                                 {"$inc": {"rev": 1}, "$set": {"towers": towers, "updated_at": now_iso()}})
     await log_activity(project_id, user, "tower.floor_layout_generated",
                        f"{tower.get('name')} · floor {body.floor}{' (AI)' if body.use_ai else ''}")
     return {"tower": tower, "towers": towers, "rooms": entry["rooms"],
@@ -643,7 +730,7 @@ async def generate_all_floors(project_id: str, tower_id: str, body: GenerateAllF
             tower["rooms"] = entry["rooms"]
 
     await db.projects.update_one({"_id": oid(project_id)},
-                                 {"$set": {"towers": towers, "updated_at": now_iso()}})
+                                 {"$inc": {"rev": 1}, "$set": {"towers": towers, "updated_at": now_iso()}})
     await log_activity(project_id, user, "tower.all_floors_generated",
                        f"{tower.get('name')} · all {floors} floors{' (AI)' if body.use_ai else ''}")
     return {"tower": tower, "towers": towers, "floors_generated": floors}
@@ -948,7 +1035,7 @@ async def run_gis(project_id: str, body: GisIn, user: dict = Depends(get_current
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await db.projects.update_one({"_id": oid(project_id)},
-                                 {"$set": {"gis": result, "updated_at": now_iso()}})
+                                 {"$inc": {"rev": 1}, "$set": {"gis": result, "updated_at": now_iso()}})
     await log_activity(project_id, user, "gis.analysed",
                        f"radius {result['radius_m']} m · suitability {result['suitability']['score']}")
     return {"gis": result, "stale": False, "has_polygon": True}
@@ -978,7 +1065,7 @@ async def _run_ai(kind: str, context: dict, *, store_at: str = "", project_id: s
                "provider": result["provider"], "generated_at": now_iso()}
     if store_at and project_id:
         await db.projects.update_one({"_id": oid(project_id)},
-                                     {"$set": {store_at: summary, "updated_at": now_iso()}})
+                                     {"$inc": {"rev": 1}, "$set": {store_at: summary, "updated_at": now_iso()}})
     if activity and project_id and user:
         await log_activity(project_id, user, activity, f"{result['model']} analysis generated")
     return summary
@@ -1152,7 +1239,22 @@ def _attach_extracts(context: Dict[str, Any],
     same one `aptcontext.build(code_extracts=...)` produces for a caller outside the cache.
     """
     if not extracts:
-        return context
+        # Silence here is what makes APT answer a code question from memory: the key is
+        # simply absent, the prompt has nothing to say about clause text, and the model
+        # fills the gap with a fluent invented clause. Saying WHY there is no extract is
+        # what turns that into a refusal.
+        status = codesearchlib.index_status()
+        if not status.get("available"):
+            note = ("No code corpus is loaded, so no clause text was retrieved for this "
+                    "question. Answer from the project's own computed values and the "
+                    "clause registry only, and say plainly that the clause text is not "
+                    "available. Do not quote or paraphrase a clause from memory.")
+            return {**context, "code_corpus": {"available": False, "note": note}}
+        note = ("The code corpus is loaded but returned no passage above the relevance "
+                "floor for this question. Treat that as the corpus not covering it: do "
+                "not substitute a remembered clause.")
+        return {**context, "code_corpus": {"available": True, "matched": False,
+                                           "note": note}}
     return {**context, "code_extracts": aptlib._extracts(extracts)}
 
 
@@ -1662,7 +1764,7 @@ async def project_finance(project_id: str, body: FinanceIn,
     if body.save:
         await db.projects.update_one(
             {"_id": oid(project_id)},
-            {"$set": {"finance": result["config"], "updated_at": now_iso()}})
+            {"$inc": {"rev": 1}, "$set": {"finance": result["config"], "updated_at": now_iso()}})
     return result
 
 
@@ -1753,8 +1855,13 @@ async def restore_version(project_id: str, version_id: str, user: dict = Depends
         raise HTTPException(status_code=404, detail="Version not found")
     snap = dict(v["snapshot"])
     snap.pop("created_at", None)
+    # A snapshot taken after revisions existed carries the revision it was saved at. Setting
+    # that back while also incrementing it is two writes to one path, which Mongo rejects
+    # outright — and restoring an OLD revision number would let a client holding the current
+    # one overwrite the restore. The revision only ever moves forward.
+    snap.pop("rev", None)
     snap["updated_at"] = now_iso()
-    await db.projects.update_one({"_id": oid(project_id)}, {"$set": snap})
+    await db.projects.update_one({"_id": oid(project_id)}, {"$inc": {"rev": 1}, "$set": snap})
     await log_activity(project_id, user, "version.restored", v["label"])
     proj = await db.projects.find_one({"_id": oid(project_id)})
     return serialize_project(proj)
@@ -1838,6 +1945,23 @@ async def download_boq_excel(project_id: str, user: dict = Depends(get_current_u
         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+@api.get("/projects/{project_id}/data-health")
+async def project_data_health(project_id: str, user: dict = Depends(get_current_user)):
+    """Whether the project's inputs are complete, fresh and self-consistent.
+
+    Read-only and derived: it stores nothing and changes nothing, so it can be polled as
+    the user edits without becoming another thing that can go stale.
+    """
+    proj = await load_project(project_id, user)
+    return datahealthlib.report(proj)
+
+
+@api.post("/data-health")
+async def data_health_live(body: AnalyseIn, user: dict = Depends(get_current_user)):
+    """Same report for an unsaved project document — mirrors /analyse."""
+    return datahealthlib.report(body.project)
+
+
 @api.get("/defaults")
 async def get_defaults():
     return {"ratios": engine.DEFAULT_RATIOS, "rates": engine.DEFAULT_RATES,
@@ -1856,7 +1980,11 @@ app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.environ.get("FRONTEND_URL", "http://localhost:3000"), "http://localhost:3000"],
+    allow_origins=[
+        os.environ.get("FRONTEND_URL", "http://localhost:3000"),
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

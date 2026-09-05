@@ -4,13 +4,15 @@ import { Metric, NumField, Section, TextField } from "../components/Field";
 import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Input } from "../components/ui/input";
-import { api, apiError } from "../lib/api";
+import { api, apiError, syncTowersFromLayout } from "../lib/api";
 import { COMPASS, num } from "../lib/format";
 import { polygonSignature } from "../lib/scene";
 import { Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
-// Distinct styled layers so envelope, circulation, amenities and packable land stay
-// visually separable on the map.
+// Distinct styled layers so the park, circulation, amenities and packable land stay
+// visually separable on the map. `envelope` is the land inside the setbacks — shown to
+// the user as the Park, and named that way in 3D too.
 const LAYER_STYLE = {
   envelope: { color: "#16A34A", weight: 2, dashArray: "6 4", fillOpacity: 0.06 },
   ring: { color: "#F59E0B", weight: 1, fillColor: "#F59E0B", fillOpacity: 0.45 },
@@ -20,7 +22,7 @@ const LAYER_STYLE = {
   tower: { color: "#1D4ED8", weight: 1.5, fillColor: "#2563EB", fillOpacity: 0.8 },
 };
 
-export default function PlotModule({ project, analysis, update, readOnly, goToModule }) {
+export default function PlotModule({ project, analysis, update, readOnly, goToModule, projectId, setProject }) {
   const plot = project.plot || {};
   const coords = plot.coordinates || [];
   const areas = analysis?.areas;
@@ -70,8 +72,14 @@ export default function PlotModule({ project, analysis, update, readOnly, goToMo
         setLayout(data);
         // Persist a full layout on the project so the 3D view and the map read the same
         // engine output instead of each deriving their own placement.
-        if (stage === "plan")
-          update((p) => { p.site_layout = { ...data, _client_signature: polygonSignature(coords) }; });
+        if (stage === "plan") {
+          const stamped = { ...data, _client_signature: polygonSignature(coords) };
+          update((p) => { p.site_layout = stamped; });
+          // The engine has just decided the number of buildings and the floors in each.
+          // Those are the same numbers Apartment Planning and the 3D model work from, so
+          // they are pushed onto the project's towers here rather than left to drift.
+          await pushTowersToPlanning(stamped);
+        }
       } else {
         setLayout(null);
         setLayoutError(data.error?.message || "Could not compute the site layout.");
@@ -84,10 +92,26 @@ export default function PlotModule({ project, analysis, update, readOnly, goToMo
     }
   };
 
+  // Applies the engine's tower count / floors to project.towers. A failure here is
+  // reported but never fails the layout itself: the layout is still valid and drawable.
+  const pushTowersToPlanning = async (stamped) => {
+    if (readOnly || !projectId || !setProject) return;
+    try {
+      const res = await syncTowersFromLayout(projectId, stamped);
+      if (!res) return;
+      setProject((prev) => ({ ...prev, towers: res.towers, ...(res.rev !== undefined && { rev: res.rev }) }));
+      toast.success(
+        `Apartment Planning updated — ${res.tower_count} tower(s), ${res.floors.join(" / ")} floors`
+      );
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail, "Layout generated, but the towers could not be updated."));
+    }
+  };
+
   const overlays = [];
   if (layout) {
     overlays.push({ key: "envelope", polygons: layout.envelope.polygons, style: LAYER_STYLE.envelope,
-                    label: `Buildable envelope · ${num(layout.envelope.area_sqm, 0)} m²` });
+                    label: `Park · ${num(layout.envelope.area_sqm, 0)} m²` });
     if (layout.residual)
       overlays.push({ key: "residual", polygons: layout.residual.polygons, style: LAYER_STYLE.residual,
                       label: `Packable land · ${num(layout.residual.area_sqm, 0)} m²` });
@@ -225,7 +249,7 @@ export default function PlotModule({ project, analysis, update, readOnly, goToMo
         {layout && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-              <Metric label="Envelope area" value={num(layout.envelope.area_sqm, 2)} unit="m²" testid="envelope-area" />
+              <Metric label="Park area" value={num(layout.envelope.area_sqm, 2)} unit="m²" testid="envelope-area" />
               <Metric label="Of plot area" value={num(layout.envelope.pct_of_plot, 1)} unit="%" testid="envelope-pct" />
               <Metric label="Regions" value={layout.envelope.part_count} testid="envelope-parts" />
               <Metric label="Plot area" value={num(layout.plot.area_sqm, 2)} unit="m²" testid="envelope-plot-area" />
@@ -406,142 +430,144 @@ export default function PlotModule({ project, analysis, update, readOnly, goToMo
         </Section>
       </div>
 
-      <Section
-        title="Road access"
-        description="Mark plot edges that face a road (edge n connects vertex n to n+1) and the road width."
-        testid="road-access-section"
-        actions={
-          !readOnly && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 rounded-sm text-xs"
-              data-testid="add-road-edge-button"
-              onClick={() => setPlot("road_edges", [...(plot.road_edges || []), { edge_index: 0, width: 9 }])}
-            >
-              <Plus className="h-3 w-3 mr-1" /> Add road edge
-            </Button>
-          )
-        }
-      >
-        {(plot.road_edges || []).length === 0 ? (
-          <p className="text-sm text-slate-500">No road-facing edge defined.</p>
-        ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {(plot.road_edges || []).map((r, i) => (
-              <div key={i} className="border border-slate-200 rounded-sm p-3 space-y-2" data-testid={`road-edge-${i}`}>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono uppercase text-slate-500">Road {i + 1}</span>
-                  {!readOnly && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-1 text-red-600"
-                      data-testid={`road-edge-delete-${i}`}
-                      onClick={() => setPlot("road_edges", plot.road_edges.filter((_, idx) => idx !== i))}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
+      <div className="grid lg:grid-cols-2 gap-4 items-start">
+        <Section
+          title="Road access"
+          description="Mark plot edges that face a road (edge n connects vertex n to n+1) and the road width."
+          testid="road-access-section"
+          actions={
+            !readOnly && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 rounded-sm text-xs"
+                data-testid="add-road-edge-button"
+                onClick={() => setPlot("road_edges", [...(plot.road_edges || []), { edge_index: 0, width: 9 }])}
+              >
+                <Plus className="h-3 w-3 mr-1" /> Add road edge
+              </Button>
+            )
+          }
+        >
+          {(plot.road_edges || []).length === 0 ? (
+            <p className="text-sm text-slate-500">No road-facing edge defined.</p>
+          ) : (
+            <div className="grid sm:grid-cols-2 gap-3">
+              {(plot.road_edges || []).map((r, i) => (
+                <div key={i} className="border border-slate-200 rounded-sm p-3 space-y-2" data-testid={`road-edge-${i}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono uppercase text-slate-500">Road {i + 1}</span>
+                    {!readOnly && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-1 text-red-600"
+                        data-testid={`road-edge-delete-${i}`}
+                        onClick={() => setPlot("road_edges", plot.road_edges.filter((_, idx) => idx !== i))}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                  <NumField
+                    label="Edge index"
+                    value={r.edge_index}
+                    disabled={readOnly}
+                    testid={`road-edge-index-${i}`}
+                    onChange={(v) => setPlot("road_edges", plot.road_edges.map((x, idx) => (idx === i ? { ...x, edge_index: v } : x)))}
+                  />
+                  <NumField
+                    label="Road width"
+                    suffix="m"
+                    value={r.width}
+                    disabled={readOnly}
+                    testid={`road-edge-width-${i}`}
+                    onChange={(v) => setPlot("road_edges", plot.road_edges.map((x, idx) => (idx === i ? { ...x, width: v } : x)))}
+                  />
                 </div>
-                <NumField
-                  label="Edge index"
-                  value={r.edge_index}
-                  disabled={readOnly}
-                  testid={`road-edge-index-${i}`}
-                  onChange={(v) => setPlot("road_edges", plot.road_edges.map((x, idx) => (idx === i ? { ...x, edge_index: v } : x)))}
-                />
-                <NumField
-                  label="Road width"
-                  suffix="m"
-                  value={r.width}
-                  disabled={readOnly}
-                  testid={`road-edge-width-${i}`}
-                  onChange={(v) => setPlot("road_edges", plot.road_edges.map((x, idx) => (idx === i ? { ...x, width: v } : x)))}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </Section>
+              ))}
+            </div>
+          )}
+        </Section>
 
-      <Section
-        title="Land boundary coordinates"
-        description="Optional surveyed boundary points (point name + latitude/longitude) from the survey sketch."
-        testid="boundary-points-section"
-        actions={
-          !readOnly && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 rounded-sm text-xs"
-              data-testid="add-boundary-point-button"
-              onClick={() => {
-                const pts = plot.boundary_points || [];
-                const c = plot.center || [12.9716, 77.5946];
-                setPlot("boundary_points", [...pts, { point_name: `P${pts.length + 1}`, lat: c[0], lng: c[1] }]);
-              }}
-            >
-              <Plus className="h-3 w-3 mr-1" /> Add point
+        <Section
+          title="Land boundary coordinates"
+          description="Optional surveyed boundary points (point name + latitude/longitude) from the survey sketch."
+          testid="boundary-points-section"
+          actions={
+            !readOnly && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 rounded-sm text-xs"
+                data-testid="add-boundary-point-button"
+                onClick={() => {
+                  const pts = plot.boundary_points || [];
+                  const c = plot.center || [12.9716, 77.5946];
+                  setPlot("boundary_points", [...pts, { point_name: `P${pts.length + 1}`, lat: c[0], lng: c[1] }]);
+                }}
+              >
+                <Plus className="h-3 w-3 mr-1" /> Add point
+              </Button>
+            )
+          }
+        >
+          {(plot.boundary_points || []).length === 0 ? (
+            <p className="text-sm text-slate-500">No surveyed boundary points recorded.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-40">Point name</TableHead>
+                  <TableHead>Latitude</TableHead>
+                  <TableHead>Longitude</TableHead>
+                  <TableHead className="w-12" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(plot.boundary_points || []).map((b, i) => {
+                  const edit = (patch) =>
+                    setPlot("boundary_points", plot.boundary_points.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+                  return (
+                    <TableRow key={i} data-testid={`boundary-point-${i}`}>
+                      <TableCell className="py-1.5">
+                        <Input className="h-8 rounded-sm text-sm" value={b.point_name || ""} disabled={readOnly}
+                          data-testid={`boundary-name-${i}`} onChange={(e) => edit({ point_name: e.target.value })} />
+                      </TableCell>
+                      <TableCell className="py-1.5">
+                        <Input type="number" step="0.000001" className="h-8 rounded-sm font-mono text-sm"
+                          value={b.lat ?? ""} disabled={readOnly} data-testid={`boundary-lat-${i}`}
+                          onChange={(e) => edit({ lat: Number(e.target.value) })} />
+                      </TableCell>
+                      <TableCell className="py-1.5">
+                        <Input type="number" step="0.000001" className="h-8 rounded-sm font-mono text-sm"
+                          value={b.lng ?? ""} disabled={readOnly} data-testid={`boundary-lng-${i}`}
+                          onChange={(e) => edit({ lng: Number(e.target.value) })} />
+                      </TableCell>
+                      <TableCell className="py-1.5">
+                        {!readOnly && (
+                          <Button size="sm" variant="ghost" className="h-7 px-1 text-red-600"
+                            data-testid={`boundary-delete-${i}`}
+                            onClick={() => setPlot("boundary_points", plot.boundary_points.filter((_, idx) => idx !== i))}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+          {(plot.boundary_points || []).length >= 3 && !readOnly && (
+            <Button size="sm" variant="outline" className="mt-3 h-7 rounded-sm text-xs"
+              data-testid="apply-boundary-points-button"
+              onClick={() => setPlot("coordinates", plot.boundary_points.map((b) => [Number(b.lat), Number(b.lng)]))}>
+              Use these points as the plot boundary
             </Button>
-          )
-        }
-      >
-        {(plot.boundary_points || []).length === 0 ? (
-          <p className="text-sm text-slate-500">No surveyed boundary points recorded.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-40">Point name</TableHead>
-                <TableHead>Latitude</TableHead>
-                <TableHead>Longitude</TableHead>
-                <TableHead className="w-12" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(plot.boundary_points || []).map((b, i) => {
-                const edit = (patch) =>
-                  setPlot("boundary_points", plot.boundary_points.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
-                return (
-                  <TableRow key={i} data-testid={`boundary-point-${i}`}>
-                    <TableCell className="py-1.5">
-                      <Input className="h-8 rounded-sm text-sm" value={b.point_name || ""} disabled={readOnly}
-                        data-testid={`boundary-name-${i}`} onChange={(e) => edit({ point_name: e.target.value })} />
-                    </TableCell>
-                    <TableCell className="py-1.5">
-                      <Input type="number" step="0.000001" className="h-8 rounded-sm font-mono text-sm"
-                        value={b.lat ?? ""} disabled={readOnly} data-testid={`boundary-lat-${i}`}
-                        onChange={(e) => edit({ lat: Number(e.target.value) })} />
-                    </TableCell>
-                    <TableCell className="py-1.5">
-                      <Input type="number" step="0.000001" className="h-8 rounded-sm font-mono text-sm"
-                        value={b.lng ?? ""} disabled={readOnly} data-testid={`boundary-lng-${i}`}
-                        onChange={(e) => edit({ lng: Number(e.target.value) })} />
-                    </TableCell>
-                    <TableCell className="py-1.5">
-                      {!readOnly && (
-                        <Button size="sm" variant="ghost" className="h-7 px-1 text-red-600"
-                          data-testid={`boundary-delete-${i}`}
-                          onClick={() => setPlot("boundary_points", plot.boundary_points.filter((_, idx) => idx !== i))}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-        {(plot.boundary_points || []).length >= 3 && !readOnly && (
-          <Button size="sm" variant="outline" className="mt-3 h-7 rounded-sm text-xs"
-            data-testid="apply-boundary-points-button"
-            onClick={() => setPlot("coordinates", plot.boundary_points.map((b) => [Number(b.lat), Number(b.lng)]))}>
-            Use these points as the plot boundary
-          </Button>
-        )}
-      </Section>
+          )}
+        </Section>
+      </div>
     </div>
   );
 }

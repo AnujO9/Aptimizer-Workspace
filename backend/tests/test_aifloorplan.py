@@ -51,10 +51,27 @@ def test_vastu_anchors_and_rotation_matrix():
     assert len(kitchens) >= 2
     assert len(shafts) >= 2
 
+    # The `vastu` label is the sector the room is ACTUALLY in, so it is checked against the
+    # geometry rather than taken at face value. It used to be a constant written onto every
+    # master bedroom regardless of placement, which made asserting on it meaningless.
+    import vastu as vastulib
+    by_unit = {}
+    for r in rooms:
+        if r.get("unit_id"):
+            by_unit.setdefault(r["unit_id"], []).append(r)
+    boxes = {uid: vastulib._bounding_box_of(rs) for uid, rs in by_unit.items()}
+
     for mb in master_beds:
-        assert "SW" in mb.get("vastu", "")
+        assert vastulib.sector_of(mb, boxes[mb["unit_id"]]) in mb["vastu"]
+        # Nairutya is the target; NE is the one sector the manual forbids outright.
+        assert "NE" not in mb["vastu"]
     for p in poojas:
         assert "NE" in p.get("vastu", "")
+
+    # A flat entered from the south has its corridor on the south wall, so a daylit SW is
+    # not available to it; the row entered from the north does get a true SW master.
+    south_row = [mb for mb in master_beds if mb["unit_id"].startswith("unit-S")]
+    assert south_row and all("SW" in mb["vastu"] for mb in south_row)
 
 
 def test_scaling_protocol_1bhk_to_5bhk_penthouse():
@@ -98,10 +115,22 @@ def test_dynamic_floor_progression_typical_vs_penthouse():
     rooms_f12, val_f12 = aifloorplan.generate_architectural_template(tower, floor=12)
     v12 = val_f12.get("vastu") or val_f12
     assert "Penthouse Level" in v12["floor_tier"]
-    # Wrap-around terrace and office on penthouse floor
     types_f12 = {r["type"] for r in rooms_f12}
-    assert "terrace" in types_f12
-    assert "office" in types_f12
+    assert "terrace" in types_f12          # balconies become wrap-around terraces up here
+
+    # The home office needs a column of facade of its own, so it appears only when the flat
+    # has the frontage for it. A 120 m2 3BHK lifted to penthouse does not: five bedrooms,
+    # living, kitchen and pooja already use every metre, and the packer drops the office
+    # rather than squeezing the rooms that need daylight. It says so in the notes.
+    office_note = [n for u in v12["unit_audits"].values() for n in u["notes"] if "Office omitted" in n]
+    assert ("office" in types_f12) or office_note, v12["unit_audits"]
+
+    # Given the frontage, it is placed.
+    wide = default_tower("Tower Wide")
+    wide["floors"] = 12
+    wide["units"] = [{"type": "penthouse", "count": 2, "carpet_area": 420.0}]
+    rooms_wide, _ = aifloorplan.generate_architectural_template(wide, floor=12)
+    assert "office" in {r["type"] for r in rooms_wide}
 
 
 def test_ai_floor_layout_fallback_or_generation():

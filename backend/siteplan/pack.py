@@ -119,6 +119,16 @@ def pack_region(region: Polygon, ctx: PackContext) -> List[TowerPlacement]:
     cx0, cy0 = region.centroid.x, region.centroid.y
     region_area = region.area
 
+    # Two packings that yield the same floor area are not equally good places to live. A
+    # bar whose long axis runs east-west presents its two long facades to north and
+    # south, so every flat on it gets sun and none of them look straight into the next
+    # block's flank. The weight is small on purpose: this decides ties, it does not buy
+    # orientation with floor area.
+    def solar_bonus(angle_deg: float) -> float:
+        return 1.0 + cfg.towers.solar_orientation_weight * math.cos(math.radians(angle_deg)) ** 2
+
+    best_score = 0.0
+
     for angle in angles:
         local = rotate(region, -angle, origin=(cx0, cy0))
         local_prep = prep(local)

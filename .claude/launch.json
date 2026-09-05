@@ -3,12 +3,12 @@
   "configurations": [
     {
       "name": "backend",
-      "runtimeExecutable": "D:/Workspace/backend/venv/Scripts/python.exe",
+      "runtimeExecutable": "D:/Sandisk Backup/Workspace/backend/venv/Scripts/python.exe",
       "runtimeArgs": [
         "-m", "uvicorn", "server:app",
-        "--app-dir", "D:/Workspace/backend",
+        "--app-dir", "D:/Sandisk Backup/Workspace/backend",
         "--reload",
-        "--reload-dir", "D:/Workspace/backend",
+        "--reload-dir", "D:/Sandisk Backup/Workspace/backend",
         "--host", "127.0.0.1",
         "--port", "8000"
       ],
@@ -16,8 +16,8 @@
     },
     {
       "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "D:/Workspace/frontend", "start"],
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["--prefix", "D:/Sandisk Backup/Workspace/frontend", "start"],
       "port": 3000
     }
   ]

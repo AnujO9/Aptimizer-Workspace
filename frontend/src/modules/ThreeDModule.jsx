@@ -12,10 +12,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import {
   ROOM_COLORS, UNIT_COLORS, engineSiteShapes, engineTowerLayout, featureShapes, isLayoutCurrent,
   localBounds, originOf, polyToLocal, polygonSignature, sunAtHour, sunVector, terrainHeights,
-  constrainedTowerLayout, spineTowerLayout,
+  constrainedTowerLayout, spineTowerLayout, rectInsidePolygon,
 } from "../lib/scene";
 import { money, num } from "../lib/format";
-import { api, apiError } from "../lib/api";
+import { api, apiError, syncTowersFromLayout } from "../lib/api";
 
 const TOWER_RULE_PARAMS = {
   min_stair_width: (tm) => tm.stair_min_width,
@@ -55,17 +55,55 @@ const Terrain = ({ bounds, terrain }) => {
   );
 };
 
+/** The plot boundary, drawn so it survives being built on.
+ *
+ *  A line lying on the ground is legible only while nothing stands in front of it. On a
+ *  massing model the boundary is the one reference every other object is judged against —
+ *  "is this inside the site" is the question the view exists to answer — so it gets three
+ *  parts: a translucent skirt standing up off the ground, which reads at any camera angle;
+ *  the surveyed line itself, drawn with depth testing off so a tower can never hide it; and
+ *  the road-frontage edges in amber on top of that.
+ */
 const PlotOutline = ({ pts, roadEdges }) => {
   const closed = [...pts, pts[0]];
+  const SKIRT_H = 2.6;
   return (
     <group>
-      <Line points={closed.map(([x, z]) => [x, 0.35, z])} color="#2563EB" lineWidth={3} />
+      {/* Vertical skirt: one quad per boundary segment. */}
+      {pts.map((a, i) => {
+        const b = pts[(i + 1) % pts.length];
+        const dx = b[0] - a[0];
+        const dz = b[1] - a[1];
+        const len = Math.hypot(dx, dz);
+        if (len < 0.01) return null;
+        return (
+          <mesh
+            key={`skirt-${i}`}
+            position={[(a[0] + b[0]) / 2, SKIRT_H / 2, (a[1] + b[1]) / 2]}
+            rotation={[0, Math.atan2(-dz, dx), 0]}
+          >
+            <planeGeometry args={[len, SKIRT_H]} />
+            <meshBasicMaterial
+              color="#2563EB"
+              transparent
+              opacity={0.16}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+            />
+          </mesh>
+        );
+      })}
+      <Line points={closed.map(([x, z]) => [x, SKIRT_H, z])} color="#1D4ED8" lineWidth={2}
+            transparent opacity={0.75} depthTest={false} />
+      <Line points={closed.map(([x, z]) => [x, 0.35, z])} color="#2563EB" lineWidth={3}
+            depthTest={false} />
       {(roadEdges || []).map((r, i) => {
         const a = pts[r.edge_index % pts.length];
         const b = pts[(r.edge_index + 1) % pts.length];
         if (!a || !b) return null;
         return (
-          <Line key={i} points={[[a[0], 0.5, a[1]], [b[0], 0.5, b[1]]]} color="#F59E0B" lineWidth={7} />
+          <Line key={i} points={[[a[0], 0.5, a[1]], [b[0], 0.5, b[1]]]} color="#F59E0B"
+                lineWidth={7} depthTest={false} />
         );
       })}
     </group>
@@ -144,16 +182,35 @@ const PlotLushGreen = ({ pts }) => {
   );
 };
 
-/** Central landscaped open space / oval green park from site engine */
-const CentralPark = ({ rings }) =>
+/** A THREE.Shape from a scene POLYGON — outer ring first, every later ring a hole.
+ *
+ *  Holes are the whole point here: the perimeter access road is an annulus, and a shape
+ *  built from its outer ring alone is a slab covering the site rather than a road round
+ *  the edge of it.
+ */
+const shapeFromPolygon = (rings) => {
+  const outer = rings?.[0];
+  if (!outer || outer.length < 3) return null;
+  const shape = new THREE.Shape(outer.map(([x, z]) => new THREE.Vector2(x, z)));
+  for (let i = 1; i < rings.length; i += 1) {
+    const hole = rings[i];
+    if (hole && hole.length >= 3) {
+      shape.holes.push(new THREE.Path(hole.map(([x, z]) => new THREE.Vector2(x, z))));
+    }
+  }
+  return shape;
+};
+
+/** The Park — the landscaped open space the engine reserved, marked in pink. */
+const ParkGround = ({ rings }) =>
   (rings || []).map((pts, i) =>
     pts.length < 3 ? null : (
       <group key={`park-${i}`}>
-        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.08, 0]} receiveShadow>
+        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0.06, 0]} receiveShadow>
           <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
-          <meshStandardMaterial color="#15803D" roughness={0.8} side={THREE.DoubleSide} />
+          <meshStandardMaterial color="#F4C2C2" roughness={0.85} side={THREE.DoubleSide} />
         </mesh>
-        <Line points={[...pts, pts[0]].map(([x, z]) => [x, 0.09, z])} color="#166534" lineWidth={2} />
+        <Line points={[...pts, pts[0]].map(([x, z]) => [x, 0.07, z])} color="#C77B8B" lineWidth={2} />
       </group>
     )
   );
@@ -182,7 +239,8 @@ const getDrivewayCenterline = (pts) => {
 const AsphaltRoadLayer = ({ rings, y = 0.14 }) => {
   const centerlines = useMemo(() => {
     const lines = [];
-    (rings || []).forEach((pts) => {
+    // Centrelines are set out from each polygon's OUTER ring; a hole has no centreline.
+    (rings || []).map((poly) => poly?.[0] || []).forEach((pts) => {
       if (pts.length === 4 || pts.length === 5) {
         const cl = getDrivewayCenterline(pts);
         if (cl) lines.push(cl);
@@ -203,14 +261,15 @@ const AsphaltRoadLayer = ({ rings, y = 0.14 }) => {
   return (
     <group>
       {/* 1. Deep Asphalt Charcoal Black Surface */}
-      {(rings || []).map((pts, i) =>
-        pts.length < 3 ? null : (
+      {(rings || []).map((poly, i) => {
+        const shape = shapeFromPolygon(poly);
+        return shape === null ? null : (
           <mesh key={`asphalt-${i}`} rotation={[Math.PI / 2, 0, 0]} position={[0, y, 0]} receiveShadow>
-            <shapeGeometry args={[new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)))]} />
-            <meshStandardMaterial color="#18181B" roughness={0.88} metalness={0.08} side={THREE.DoubleSide} />
+            <shapeGeometry args={[shape]} />
+            <meshStandardMaterial color="#2A2A2E" roughness={0.9} metalness={0.05} side={THREE.DoubleSide} />
           </mesh>
-        )
-      )}
+        );
+      })}
 
       {/* 2. Concrete Road Curb Edges */}
       {(rings || []).map((pts, i) =>
@@ -255,7 +314,7 @@ const AmenityMesh = ({ block }) => {
             roughness={0.5}
           />
         </mesh>
-        <Html position={[0, h + 2.5, 0]} center>
+        <Html position={[0, h + 2.5, 0]} center distanceFactor={140} occlude>
           <div
             className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm border bg-violet-50 border-violet-300 text-violet-800 shadow-xs whitespace-nowrap"
             data-testid={`amenity-label-${block.key}`}
@@ -326,19 +385,23 @@ const AmenityMesh = ({ block }) => {
         <meshStandardMaterial color="#BFDBFE" transparent opacity={0.4} />
       </mesh>
 
-      <Html position={[0, h + 3.2, 0]} center>
+      <Html position={[0, h + 3.2, 0]} center distanceFactor={140} occlude>
+        {/* Short enough to stay on one line at model scale. The full description of what
+            the block contains belongs in the selection panel, not floating over the site —
+            a tag long enough to wrap becomes a column of text standing in front of the
+            towers it is meant to annotate. */}
         <div
-          className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-sm border bg-blue-50/95 border-blue-300 text-blue-900 shadow-sm whitespace-nowrap"
+          className="whitespace-nowrap text-[10px] font-mono font-medium px-2 py-0.5 rounded-sm border bg-blue-50/95 border-blue-300 text-blue-900 shadow-sm"
           data-testid={`amenity-label-${block.key}`}
         >
-          Integrated Community Clubhouse · Lounge, Gym &amp; Rooftop Pool
+          Clubhouse · Gym · Pool
         </div>
       </Html>
     </group>
   );
 };
 
-const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, violations, onSelect, layers }) => {
+const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, violations, onSelect, layers, showLabel = true }) => {
   const slabRef = useRef();
   const visibleFloors = sectionFloor ? Math.min(sectionFloor, tower.floors) : tower.floors;
   const unitColor = useMemo(() => {
@@ -398,21 +461,38 @@ const TowerMesh = ({ tower, metrics, detailed, sectionFloor, selected, dimmed, v
           </mesh>
         ))}
 
-      <Html position={[0, visibleFloors * tower.floorHeight + 4, 0]} center>
-        <div
-          onClick={onSelect}
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => e.stopPropagation()}
-          className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm border cursor-pointer ${
-            violations.length ? "bg-red-50 border-red-300 text-red-700" : "bg-white/95 border-slate-200"
-          }`}
-          data-testid={`tower-label-${tower.id}`}
+      {/* A label is drawn in the scene, not over it.
+       *
+       *  Without `distanceFactor` an Html label holds the same pixel size at every zoom, so
+       *  on a site the engine packed with a dozen towers the chips stay full size while the
+       *  buildings shrink, and the plan disappears under its own annotation. With it the
+       *  label is a fixed size in METRES and recedes with the thing it names.
+       *
+       *  `occlude` keeps a label behind a mass from drawing through it, which is the other
+       *  half of the pile-up: every label used to render on top of every tower. */}
+      {(showLabel || selected) && (
+        <Html
+          position={[0, visibleFloors * tower.floorHeight + 4, 0]}
+          center
+          distanceFactor={140}
+          occlude
+          zIndexRange={[20, 0]}
         >
-          {tower.name} · {tower.floors}F{violations.length ? ` · ${violations.length} fail` : ""}
-        </div>
-      </Html>
+          <div
+            onClick={onSelect}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm border cursor-pointer whitespace-nowrap ${
+              violations.length ? "bg-red-50 border-red-300 text-red-700" : "bg-white/95 border-slate-200"
+            }`}
+            data-testid={`tower-label-${tower.id}`}
+          >
+            {tower.name} · {tower.floors}F{violations.length ? ` · ${violations.length} fail` : ""}
+          </div>
+        </Html>
+      )}
       {metrics && selected && (
-        <Html position={[0, visibleFloors * tower.floorHeight + 9, 0]} center>
+        <Html position={[0, visibleFloors * tower.floorHeight + 9, 0]} center distanceFactor={140}>
           <div className="text-[10px] font-mono bg-blue-600 text-white px-1.5 py-0.5 rounded-sm">isolated</div>
         </Html>
       )}
@@ -525,7 +605,7 @@ const Floor3D = ({ tower, floor, onSelectRoom, selectedRoomId, violated }) => {
               <boxGeometry args={[Math.max(w * 0.5, 0.6), 1.0, 0.08]} />
               <meshStandardMaterial color="#7DD3FC" transparent opacity={0.7} />
             </mesh>
-            <Html position={[cx, 3.2, cz]} center>
+            <Html position={[cx, 3.2, cz]} center distanceFactor={60}>
               <div
                 onClick={() => onSelectRoom(r)}
                 onPointerDown={(e) => e.stopPropagation()}
@@ -588,7 +668,7 @@ const WalkController = ({ enabled, y }) => {
 };
 
 // ------------------------------------------------------------------ module
-export default function ThreeDModule({ project, analysis, update, readOnly }) {
+export default function ThreeDModule({ project, analysis, update, readOnly, projectId, setProject }) {
   const [view, setView] = useState("site");
   const [detailed, setDetailed] = useState(false);
   const [simpleView, setSimpleView] = useState(false);
@@ -599,7 +679,7 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
   const [season, setSeason] = useState("equinox");
   const [towerIdx, setTowerIdx] = useState(0);
   const [selected, setSelected] = useState(null);
-  const [layers, setLayers] = useState({ parking: true, balconies: true, common: true, violations: true, site: true });
+  const [layers, setLayers] = useState({ parking: true, balconies: true, common: true, violations: true, site: true, labels: true });
   const [autoRun, setAutoRun] = useState("");   // "", "running", or an error message
   const autoRanRef = useRef(false);             // fires at most once per mount
 
@@ -624,19 +704,41 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
     const pts = polyToLocal(coords, origin);
     const bounds = localBounds(pts);
     // Prefer the site layout engine, whose footprints are guaranteed inside the setback
-    // envelope. spineTowerLayout arranges residential towers along the straight spine road
-    // with optimal sunlight separation matching the site layout plan.
+    // envelope.
     const engine = engineTowerLayout(siteLayout, project.towers || []);
-    const alignedSpine = spineTowerLayout(project.towers || [], pts, bounds);
-    const towers = engine && engine.length > 0 ? engine : alignedSpine;
+    const projectTowers = project.towers || [];
+
+    // The fallback, used only until the engine has run for this plot. spineTowerLayout
+    // arranges towers either side of a spine, which reads well — but it places by offset
+    // from the centre and never tests the plot ring, so past a handful of towers it walks
+    // its own rows straight off the site. It is therefore used only when every footprint
+    // it produced is verified inside the boundary; otherwise constrainedTowerLayout packs
+    // them centre-out with a containment test on each, and anything that genuinely will
+    // not fit is reported rather than drawn somewhere it could never be built.
+    let fallback = [];
+    let dropped = [];
+    if (projectTowers.length) {
+      const spine = spineTowerLayout(projectTowers, pts, bounds);
+      const spineFits = spine.length > 0
+        && spine.every((t) => rectInsidePolygon(t.x, t.z, t.w, t.d, pts));
+      if (spineFits) {
+        fallback = spine;
+      } else {
+        fallback = constrainedTowerLayout(projectTowers, pts, bounds);
+        dropped = fallback.dropped || [];
+      }
+    }
+
+    const usingEngine = !!(engine && engine.length > 0);
+    const towers = usingEngine ? engine : fallback;
     const site = engineSiteShapes(siteLayout, pts, bounds);
 
     return {
       origin, pts, bounds,
       towers,
-      fromEngine: !!(engine && engine.length > 0),
-      engineEmpty: false,
-      droppedFromFallback: [],
+      fromEngine: usingEngine,
+      engineEmpty: !!engine && engine.length === 0,
+      droppedFromFallback: usingEngine ? [] : dropped,
       site,
       terrain: terrainHeights(gis, origin, bounds),
       buildings: featureShapes(gis, origin, "buildings"),
@@ -677,6 +779,17 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
           const stamped = { ...data, _client_signature: polygonSignature(coords) };
           update((p) => { p.site_layout = stamped; });
           setAutoRun("");
+          // Same engine numbers the model is about to draw — the tower count and the
+          // floors in each — pushed onto the project so the planning module, the area
+          // calculations and this view all describe one building set.
+          if (projectId && setProject)
+            syncTowersFromLayout(projectId, stamped)
+              .then((res) => {
+                if (res && !cancelled)
+                  setProject((prev) => ({ ...prev, towers: res.towers,
+                                          ...(res.rev !== undefined && { rev: res.rev }) }));
+              })
+              .catch(() => {});
         } else {
           // Let a later render try again: latching the ref on failure would strand the
           // view on the fallback for the rest of the session.
@@ -830,7 +943,7 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
             <Switch checked={walk} onCheckedChange={setWalk} data-testid="walk-mode-toggle" />
             <Move3d className="h-3 w-3" /> Walk mode
           </label>
-          {["parking", "balconies", "common", "violations"].map((k) => (
+          {["labels", "parking", "balconies", "common", "violations"].map((k) => (
             <label key={k} className="flex items-center gap-1.5 text-[11px] capitalize">
               <Switch
                 checked={layers[k]}
@@ -957,8 +1070,9 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
               {/* Reserved circulation, parking, central park and integrated clubhouse from site engine */}
               {scene.site && view !== "floorplan" && layers.site && (
                 <>
-                  {/* Central landscaped park */}
-                  <CentralPark rings={scene.site.green} />
+                  {/* The Park, in pink. Everything green underneath it is simply land with
+                      no road and no building on it. */}
+                  <ParkGround rings={scene.site.green} />
                   {/* Asphalt black access ring road with white dashed centerlines */}
                   <AsphaltRoadLayer rings={scene.site.ring} y={0.13} isRing={true} />
                   {/* Asphalt black internal spine driveways with white dashed centerlines */}
@@ -995,6 +1109,7 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
                         : []
                     }
                     layers={layers}
+                    showLabel={layers.labels}
                     onSelect={() => {
                       setTowerIdx(i);
                       setSelected({ type: "tower", index: i });
@@ -1103,6 +1218,12 @@ export default function ThreeDModule({ project, analysis, update, readOnly }) {
                 <span>Terrain source</span>
                 <span className="font-mono">{scene.terrain.heights ? `GIS · relief ${num(scene.terrain.relief, 1)} m` : "flat"}</span>
               </div>
+              {scene.site?.parkArea != null && (
+                <div className="flex justify-between" data-testid="three-park-area">
+                  <span>Park</span>
+                  <span className="font-mono">{num(scene.site.parkArea, 0)} m²</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span>Parking slots rendered</span>
                 <span className="font-mono">{Math.min(analysis?.parking?.provided_slots || 0, 220)}</span>

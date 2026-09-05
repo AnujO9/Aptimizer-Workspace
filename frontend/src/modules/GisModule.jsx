@@ -309,27 +309,25 @@ export default function GisModule({ project, projectId, readOnly }) {
               </Section>
             )}
 
-            <div className="space-y-4">
-              <Section title={`Wind — ${gis.wind.region}`} testid="gis-wind-section">
-                <WindRose wind={gis.wind} />
-                <div className="grid grid-cols-3 gap-3 mt-2">
-                  <Metric label="Prevailing" value={gis.wind.prevailing} testid="wind-prevailing" />
-                  <Metric label="Summer" value={gis.wind.summer} testid="wind-summer" />
-                  <Metric label="Mean speed" value={gis.wind.mean_speed_ms} unit="m/s" testid="wind-speed" />
-                </div>
-                <p className="text-xs text-slate-600 mt-2">{gis.wind.guidance}</p>
-              </Section>
+            <Section title={`Wind — ${gis.wind.region}`} testid="gis-wind-section">
+              <WindRose wind={gis.wind} />
+              <div className="grid grid-cols-3 gap-3 mt-2">
+                <Metric label="Prevailing" value={gis.wind.prevailing} testid="wind-prevailing" />
+                <Metric label="Summer" value={gis.wind.summer} testid="wind-summer" />
+                <Metric label="Mean speed" value={gis.wind.mean_speed_ms} unit="m/s" testid="wind-speed" />
+              </div>
+              <p className="text-xs text-slate-600 mt-2">{gis.wind.guidance}</p>
+            </Section>
 
-              <Section title={`Accessibility — ${gis.accessibility.score}/100`} testid="gis-accessibility-section">
-                <ul className="space-y-1 text-sm">
-                  {gis.accessibility.notes.map((n, i) => (
-                    <li key={i} className="text-slate-700" data-testid={`access-note-${i}`}>
-                      · {n}
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            </div>
+            <Section title={`Accessibility — ${gis.accessibility.score}/100`} testid="gis-accessibility-section">
+              <ul className="space-y-1 text-sm">
+                {gis.accessibility.notes.map((n, i) => (
+                  <li key={i} className="text-slate-700" data-testid={`access-note-${i}`}>
+                    · {n}
+                  </li>
+                ))}
+              </ul>
+            </Section>
           </div>
 
           <Section
@@ -337,7 +335,7 @@ export default function GisModule({ project, projectId, readOnly }) {
             description="Claude Sonnet 4.6 — generated from the suitability score, buildability flags and every analysis above"
             testid="gis-ai-section"
             actions={
-              <Button onClick={runAi} disabled={aiBusy || readOnly} className="rounded-sm h-8" data-testid="run-ai-summary-button">
+              <Button onClick={runAi} disabled={aiBusy || readOnly} variant="ai" className="rounded-sm h-8" data-testid="run-ai-summary-button">
                 <Sparkles className={`h-3.5 w-3.5 mr-1.5 ${aiBusy ? "animate-pulse" : ""}`} />
                 {aiBusy ? "Generating…" : gis.ai_summary ? "Regenerate" : "Generate AI analysis"}
               </Button>

@@ -1,8 +1,14 @@
-"""Step 6 tests: the consolidated report set.
+"""Tests for the report set.
 
-Five reports were merged away. The thing to hold is that merging removed DOCUMENTS, not
-NUMBERS -- every figure the merged report carried has to appear in the one that absorbed
-it, or consolidation was just deletion.
+Two things to hold.
+
+Four reports were merged away. Merging removed DOCUMENTS, not NUMBERS -- every figure the
+merged report carried has to appear in the one that absorbed it, or consolidation was just
+deletion.
+
+And the set has to keep up with the app. Every workspace module that produces figures owes
+the reader a document carrying them, in the order the menu lists them, each opening with
+its own answer before its workings.
 """
 import sys, os, io as _io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,9 +30,77 @@ def text_of(pdf: bytes) -> str:
     return "\n".join(pg.extract_text() or "" for pg in PdfReader(_io.BytesIO(pdf)).pages)
 
 
-def test_there_are_exactly_eleven_reports():
-    assert len(R.REPORT_TITLES) == 12
+def flat(pdf: bytes) -> str:
+    """Extracted text with whitespace collapsed.
+
+    PDF extraction breaks a line wherever the renderer wrapped it, so a heading that reads
+    as one phrase on the page arrives split. Collapsing tests what the reader sees rather
+    than where the text happened to wrap.
+    """
+    return " ".join(text_of(pdf).split())
+
+
+@pytest.fixture(scope="module")
+def gis_project():
+    """A project carrying a GIS run, assembled from the analysis functions directly.
+
+    `gis.analyse_site` fetches Overpass and elevation over the network; a report test must
+    not depend on either being reachable, so the pure scoring functions are called with
+    fixed features instead.
+    """
+    import gis as g
+    p = default_project("RepGis", "QA", "Hyderabad", "R-2", "owner")
+    coords = p["plot"]["coordinates"]
+    c = g.centroid(coords)
+    terrain = {"available": True, "min_m": 495.0, "max_m": 508.0, "mean_m": 501.0,
+               "relief_m": 13.0, "avg_slope_pct": 2.4, "slope_class": "gentle",
+               "ring_mean_m": 503.0}
+    features = {"roads": [{"kind": "residential", "distance_m": 4.0, "road_width_m": 4.0},
+                          {"kind": "secondary", "distance_m": 80.0, "road_width_m": 12.0}],
+                "transit": [{"kind": "bus_stop", "distance_m": 100.0}],
+                "water": [], "schools": [], "hospitals": [], "parks": [], "shops": []}
+    flood = g.flood_risk(terrain, features["water"])
+    acc = g.accessibility(features["roads"], features["transit"], coords,
+                          p["plot"].get("road_edges") or [])
+    sun = g.sun_path(round(c[0], 6), round(c[1], 6), 0)
+    roof = sum(float(t.get("footprint_area") or 0) for t in p["towers"])
+    p["gis"] = {
+        "radius_m": 500, "centroid": [round(c[0], 6), round(c[1], 6)],
+        "vertices": len(coords), "features": features,
+        "feature_counts": {k: len(v) for k, v in features.items()},
+        "terrain": terrain, "flood": flood, "wind": g.wind_profile(c[0], c[1]),
+        "sun": sun,
+        "solar": g.solar_potential(round(c[0], 6), round(c[1], 6), roof, {}),
+        "accessibility": acc,
+        "suitability": g.suitability(terrain, flood, acc, sun),
+        "buildability": g.buildability(terrain, flood, acc, features),
+    }
+    a = engine.analyse(p)
+    return p, a, englib.analyse_engineering(p, a)
+
+
+#: One report per workspace module, in menu order. Kept here as data rather than a count,
+#: because a bare number tells a later reader nothing about what went missing.
+EXPECTED = [
+    "executive",
+    "plot", "site",                                             # Site
+    "planning", "parking", "layout",                            # Design
+    "calculations", "engineering", "structural", "water",
+    "fire", "sustainability",                                   # Engineering
+    "boq", "cost", "programme",                                 # Cost & Programme
+    "compliance", "datahealth",                                 # Deliver
+]
+
+
+def test_the_report_set_is_exactly_the_expected_one():
+    assert list(R.REPORT_TITLES) == EXPECTED
     assert set(R.ALL_ORDER) == set(R.REPORT_TITLES)
+
+
+def test_the_merged_pdf_reads_in_menu_order_after_the_summary():
+    """The contents page and the sidebar have to agree on where a subject lives."""
+    assert R.ALL_ORDER[0] == "executive"
+    assert R.ALL_ORDER == EXPECTED
 
 
 @pytest.mark.parametrize("key", list(R.REPORT_TITLES))
@@ -94,7 +168,6 @@ def test_cost_report_carries_the_optimisation_findings(ctx):
     assert "Optimisation Findings" in t
     assert "Change required" in t
     assert "Waste reduction" in t
-    assert len(R.REPORT_TITLES) == 12
 
 
 def test_setbacks_appear_in_a_report_of_their_own(ctx):
@@ -164,8 +237,124 @@ def test_contents_page_numbers_point_at_the_right_reports(ctx):
 
 
 def test_every_module_is_represented_somewhere():
-    """The gap this step existed to close: six modules produced nothing downloadable."""
+    """The gap this step existed to close: modules that produced nothing downloadable."""
     covered = " ".join(R.REPORT_TITLES.values()).lower()
-    for topic in ("site", "compliance", "engineering", "structural", "water", "fire",
-                  "sustainability", "boq", "cost", "programme"):
+    for topic in ("site", "plot", "planning", "vastu", "parking", "layout", "calculation",
+                  "compliance", "engineering", "structural", "water", "fire",
+                  "sustainability", "boq", "cost", "programme", "reliability"):
         assert topic in covered, topic
+
+# ---------------------------------------------------------------- the summary block
+# Every report opens with its own answer. A reader who only wants the outcome should not
+# have to reconstruct it from six tables.
+@pytest.mark.parametrize("key", list(R.REPORT_TITLES))
+def test_every_report_opens_with_its_own_summary(ctx, key):
+    p, a, eng = ctx
+    t = flat(R.build_pdf(key, p, a, eng))
+    assert "Report Summary" in t, key
+    # Before the workings, not buried after them.
+    assert t.index("Report Summary") < t.index("Key Project Metrics"), key
+
+
+@pytest.mark.parametrize("key", list(R.REPORT_TITLES))
+def test_no_summary_quietly_falls_back_to_the_apology(ctx, key):
+    """The summary is wrapped so a failure cannot cost the reader the report -- which also
+    means a broken one degrades silently. This is what notices it."""
+    p, a, eng = ctx
+    assert "summary could not be assembled" not in flat(R.build_pdf(key, p, a, eng)), key
+
+
+# ---------------------------------------------------------------- modules that had no report
+def test_planning_report_carries_the_mix_and_the_vastu_audit(ctx):
+    p, a, eng = ctx
+    t = flat(R.build_pdf("planning", p, a, eng))
+    assert "Unit Mix" in t and "Mix Across the Scheme" in t
+    assert "Society Amenities" in t
+    assert "Vastu Audit" in t and "Sector Anchors" in t
+
+
+def test_parking_is_a_report_again_not_a_block_in_the_executive(ctx):
+    """It was merged into the Executive Summary before the parking engine grew a per-
+    building demand model and an authority norm; nine lines could not carry those."""
+    p, a, eng = ctx
+    t = flat(R.build_pdf("parking", p, a, eng))
+    assert "Governing Norm" in t
+    assert "Parking Checks" in t and "Ramp Geometry" in t
+    assert "Supply Efficiency" in t
+    assert "parking" not in R.MERGED_INTO
+
+
+def test_calculations_report_reproduces_the_far(ctx):
+    p, a, eng = ctx
+    t = flat(R.build_pdf("calculations", p, a, eng))
+    assert "Area Derivation" in t and "FAR Derivation" in t
+    assert "Not Counted in FAR" in t
+    assert str(a["far_derivation"]["far"]) in t
+
+
+def test_data_reliability_report_grades_the_document_not_the_engineering(ctx):
+    p, a, eng = ctx
+    t = flat(R.build_pdf("datahealth", p, a, eng))
+    assert "Completeness" in t and "Freshness" in t and "Consistency" in t
+    assert "Input Completeness by Group" in t
+    assert "never the engineering" in t
+
+
+def test_layout_report_says_so_when_no_layout_has_been_generated(ctx):
+    """Silence would read as "there is no site plan to show", a different claim."""
+    p, a, eng = ctx
+    assert "No site layout has been generated" in flat(R.build_pdf("layout", p, a, eng))
+
+
+def test_layout_report_carries_the_land_budget_once_generated(ctx):
+    from siteplan.plan import plan_site
+    p, a, eng = ctx
+    p = {**p, "site_layout": plan_site(p)}
+    t = flat(R.build_pdf("layout", p, a, eng))
+    assert "Land Budget" in t and "Layout Performance" in t
+    assert "Placed Blocks" in t and "Circulation" in t
+
+
+# ---------------------------------------------------------------- enrichments
+def test_water_report_carries_the_utility_sizing_it_absorbed(ctx):
+    """`utilities` resolves to `water` before the section test runs, so a section guarded
+    on the merged id could never fire -- which is how this table went missing."""
+    p, a, eng = ctx
+    t = flat(R.build_pdf("water", p, a, eng))
+    assert "Utility Planning" in t
+    assert "Demand Build-up" in t
+    assert "STP Capacity" in t and "Rainwater Harvest" in t
+
+
+def test_site_report_reports_access_from_the_keys_gis_actually_returns(gis_project):
+    """It used to print the "summary" key, which the GIS module has never returned, so
+    every project rendered a dash where the access findings belong."""
+    p, a, eng = gis_project
+    t = flat(R.build_pdf("site", p, a, eng))
+    assert "Nearest road" in t and "Roads within 100 m" in t
+    for note in p["gis"]["accessibility"]["notes"]:
+        assert " ".join(note.split()) in t
+
+
+def test_site_report_carries_wind_context_and_buildability(gis_project):
+    p, a, eng = gis_project
+    t = flat(R.build_pdf("site", p, a, eng))
+    assert "Prevailing direction" in t and p["gis"]["wind"]["region"] in t
+    assert "Surrounding Context" in t
+    assert "Buildability" in t
+    assert "Rooftop Solar Potential" in t and "Specific yield" in t
+
+
+def test_sustainability_carries_the_full_solar_case(gis_project):
+    p, a, eng = gis_project
+    t = flat(R.build_pdf("sustainability", p, a, eng))
+    assert "Rooftop Solar" in t
+    assert "Lifetime generation" in t and "Usable after plant and access" in t
+
+
+def test_executive_points_at_the_reports_that_carry_the_workings(gis_project):
+    """A client reading only the summary should learn the scheme was audited, and where."""
+    p, a, eng = gis_project
+    t = flat(R.build_pdf("executive", p, a, eng))
+    assert "Data Reliability" in t
+    assert "Apartment Planning & Vastu" in t

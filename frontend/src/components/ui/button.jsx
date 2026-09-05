@@ -17,6 +17,11 @@ const buttonVariants = cva(
           "border border-input shadow-sm hover:bg-accent hover:text-accent-foreground",
         secondary:
           "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+        // Every control that calls a model wears this one, so "is this AI?" is answered by
+        // the button and not by reading its label. Defined here rather than per-button so
+        // the set stays a set. #F4C2C2 is light enough that white on it fails contrast, so
+        // the label and icon are a deep rose that clears 8:1 against the fill.
+        ai: "bg-[#F4C2C2] text-[#6B2233] shadow-sm hover:bg-[#EBACAC] focus-visible:ring-[#C98A8A]",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },

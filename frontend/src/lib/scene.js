@@ -43,7 +43,14 @@ export const localBounds = (pts) => {
  *  geometry code and is not safe to render against the current boundary. */
 export const ENGINE_VERSION = 3;
 
-/** Digest of a plot ring, mirroring backend siteplan.version.polygon_signature. */
+/** Digest of a plot ring.
+ *
+ *  NOT interchangeable with backend siteplan.version.polygon_signature: both hash the same
+ *  rounded body string, but the backend uses SHA-1 and this uses FNV-1a, so the two digests
+ *  never agree. That is why a layout is stamped with `_client_signature` computed HERE on
+ *  the way in — comparing the engine's own stamp against this function would report every
+ *  layout as belonging to a different plot.
+ */
 export const polygonSignature = (coords = []) => {
   if (!coords.length) return "";
   // FNV-1a over the same rounded body the backend hashes; we only need "same or not",
@@ -57,13 +64,33 @@ export const polygonSignature = (coords = []) => {
   return h.toString(16);
 };
 
-/** Is a stored layout still a description of this plot, from this engine? */
+/** Is a stored layout still a description of this plot, from this engine?
+ *
+ *  This used to take `coords` and never read it, returning true for any layout that had
+ *  towers — so the stale-layout warning it feeds could not fire, and a boundary edited
+ *  after a layout was packed went on rendering the old towers as though they belonged to
+ *  the new plot. Both stamps are now compared, which is what version.py's own docstring
+ *  says consumers do.
+ */
 export const isLayoutCurrent = (siteLayout, coords = []) => {
   if (!siteLayout) return false;
-  // If it has packed towers or reserved circulation from the site engine, it is valid
-  if (Array.isArray(siteLayout.towers) && siteLayout.towers.length > 0) return true;
-  if (siteLayout.roads || siteLayout.envelope) return true;
-  return false;
+  const hasContent =
+    (Array.isArray(siteLayout.towers) && siteLayout.towers.length > 0)
+    || !!siteLayout.roads
+    || !!siteLayout.envelope;
+  if (!hasContent) return false;
+
+  // Geometry produced by a different build of the engine is not safe to draw against the
+  // current boundary, whatever plot it was packed for.
+  if (siteLayout.engine_version !== undefined && siteLayout.engine_version !== ENGINE_VERSION)
+    return false;
+
+  // A layout stamped on the way in can be checked against the boundary as it stands now.
+  // One saved before stamping existed carries no stamp, and an unanswerable question is
+  // not evidence of staleness — those keep rendering rather than nagging forever.
+  const stamped = siteLayout._client_signature;
+  if (!stamped) return true;
+  return stamped === polygonSignature(coords);
 };
 
 export const engineTowerLayout = (siteLayout, projectTowers = []) => {
@@ -110,9 +137,18 @@ export const engineTowerLayout = (siteLayout, projectTowers = []) => {
   });
 };
 
-/** Engine polygon rings (+y north metres) -> scene rings (+z south metres). */
-const toSceneRings = (polys) =>
-  (polys || []).map((rings) => (rings[0] || []).map(([x, y]) => [x, -y]));
+/** Engine polygons (+y north metres) -> scene polygons (+z south metres).
+ *
+ *  A polygon is a LIST OF RINGS: the outer boundary followed by any holes. This used to
+ *  return `rings[0]` alone, which is why the perimeter access road never appeared as a
+ *  road — a ring road is an annulus, and dropping its hole turns it into a solid slab
+ *  covering the whole site instead of a band around the edge.
+ */
+const toScenePolys = (polys) =>
+  (polys || []).map((rings) => (rings || []).map((ring) => ring.map(([x, y]) => [x, -y])));
+
+/** Outer boundary only, for shapes that genuinely have no holes. */
+const toSceneRings = (polys) => toScenePolys(polys).map((rings) => rings[0] || []);
 
 /** Centre, side lengths and Y rotation of a 4-point ring, measured off the ring itself. */
 const rectFromRing = (ring) => {
@@ -224,7 +260,14 @@ export const generateCanonicalSiteShapes = (pts, bounds) => {
     ],
   ];
 
-  return { ring, driveways, green, amenities, bays };
+  // Roads are handed back in the same shape the engine path uses — a list of POLYGONS,
+  // each a list of rings — so one renderer serves both and neither has to guess which it
+  // was given. These fallback bands are simple rectangles, so each is its own outer ring.
+  return {
+    ring: ring.map((r) => [r]),
+    driveways: driveways.map((r) => [r]),
+    green, amenities, bays,
+  };
 };
 
 /** Arranges towers along the spine road with optimal sunlight & open space */
@@ -322,10 +365,13 @@ export const engineSiteShapes = (siteLayout, pts = [], bounds = null) => {
 
     return {
       amenities,
-      ring: toSceneRings(siteLayout?.roads?.ring_polygons_local),
-      driveways: toSceneRings(siteLayout?.roads?.driveway_polygons_local),
+      ring: toScenePolys(siteLayout?.roads?.ring_polygons_local),
+      driveways: toScenePolys(siteLayout?.roads?.driveway_polygons_local),
       bays: toSceneRings(siteLayout?.surface_parking?.polygons_local),
       green,
+      // Area of the reserved landscaped space, so the panel names the pink region on
+      // screen rather than a different number that also happens to be called Park.
+      parkArea: siteLayout?.green?.area_sqm ?? null,
     };
   }
 

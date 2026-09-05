@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Sparkles, Trash2, Building2, Compass, ShieldCheck, CheckCircle2 } from "lucide-react";
-import { api, apiError } from "../lib/api";
+import { Plus, RefreshCw, Sparkles, Trash2, Building2, Compass, ShieldCheck, CheckCircle2, LayoutGrid } from "lucide-react";
+import { api, apiError, syncTowersFromLayout } from "../lib/api";
 import { Metric, NumField, Section, TextField } from "../components/Field";
 import OptimiserPanel from "../components/OptimiserPanel";
 import { FloorPlate } from "../components/FloorPlate";
@@ -13,12 +13,12 @@ import { Slider } from "../components/ui/slider";
 import { int, num } from "../lib/format";
 
 const UNIT_TYPES = ["studio", "1bhk", "2bhk", "3bhk", "4bhk", "penthouse", "custom"];
-const ROOM_TYPES = ["living", "bedroom", "kitchen", "bathroom", "balcony", "utility", "closet", "entrance", "study", "common", "pooja", "shaft", "servant", "terrace", "office", "pantry"];
+const ROOM_TYPES = ["living", "bedroom", "kitchen", "bathroom", "balcony", "utility", "closet", "entrance", "passage", "study", "common", "pooja", "shaft", "servant", "terrace", "office", "pantry"];
 const STAIR_TYPES = ["dog-legged", "open-well", "spiral", "straight-flight"];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-export default function PlanningModule({ project, analysis, update, readOnly, projectId, setProject }) {
+export default function PlanningModule({ project, analysis, update, readOnly, projectId, setProject, goToModule }) {
   const towers = project.towers || [];
   const societyAmenities = project.society_amenities || [];
   const [activeIdx, setActiveIdx] = useState(0);
@@ -29,6 +29,33 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
   const [floorLoading, setFloorLoading] = useState(false);
   const [floorStale, setFloorStale] = useState(false);
   const [floorValidation, setFloorValidation] = useState({});
+  const [syncing, setSyncing] = useState(false);
+
+  // The site layout engine is the authority on how many buildings the land takes and how
+  // many floors each carries — it packs them inside the setback envelope under the FAR
+  // cap. Planning reads those numbers rather than keeping a second, drifting list.
+  const engineTowers = project.site_layout?.towers || [];
+  const engineFloors = engineTowers.map((et) => Number(et.floors));
+  const planFloors = towers.map((tw) => Number(tw.floors));
+  const inStepWithLayout =
+    engineTowers.length > 0 &&
+    planFloors.length === engineFloors.length &&
+    planFloors.every((f, i) => f === engineFloors[i]);
+
+  const syncFromLayout = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncTowersFromLayout(projectId, project.site_layout);
+      setProject((prev) => ({ ...prev, towers: res.towers, ...(res.rev !== undefined && { rev: res.rev }) }));
+      setActiveIdx(0);
+      setFloor(1);
+      toast.success(`${res.tower_count} tower(s) from the site layout · ${res.floors.join(" / ")} floors`);
+    } catch (e) {
+      toast.error(apiError(e.response?.data?.detail));
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const setT = (key, value) => update((p) => { p.towers[activeIdx][key] = value; });
   const setList = (key, list) => setT(key, list);
@@ -37,7 +64,7 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
   const addTower = async () => {
     try {
       const { data } = await api.post(`/projects/${projectId}/towers`);
-      setProject((prev) => ({ ...prev, towers: data.towers }));
+      setProject((prev) => ({ ...prev, towers: data.towers, ...(data.rev !== undefined && { rev: data.rev }) }));
       setActiveIdx(data.towers.length - 1);
       toast.success(`${data.tower.name} added`);
     } catch (e) {
@@ -159,9 +186,64 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
         )}
       </Section>
 
+      <div
+        className={`rounded-sm border px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-2 ${
+          engineTowers.length === 0
+            ? "bg-slate-50 border-slate-200"
+            : inStepWithLayout
+            ? "bg-emerald-50 border-emerald-200"
+            : "bg-amber-50 border-amber-200"
+        }`}
+        data-testid="layout-sync-banner"
+      >
+        <LayoutGrid className="h-4 w-4 shrink-0 text-slate-500" />
+        <div className="text-[11px] leading-relaxed min-w-0 flex-1">
+          {engineTowers.length === 0 ? (
+            <>
+              No site layout yet. The site layout engine decides how many buildings the plot
+              takes and how many floors each one carries — run{" "}
+              <button type="button" className="text-blue-700 hover:underline"
+                      data-testid="goto-site-layout-link" onClick={() => goToModule?.("plot")}>
+                Plot &amp; Setbacks → Generate layout
+              </button>{" "}
+              and those numbers land here.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">Site layout engine</span> ·{" "}
+              <span className="font-mono" data-testid="engine-tower-count">{engineTowers.length}</span> building(s) ·
+              floors <span className="font-mono" data-testid="engine-floors">{engineFloors.join(" / ")}</span>
+              {inStepWithLayout ? (
+                <span className="text-emerald-700"> — planning and the 3D model match this layout.</span>
+              ) : (
+                <span className="text-amber-800">
+                  {" "}— planning currently has{" "}
+                  <span className="font-mono">{planFloors.length}</span> tower(s) at{" "}
+                  <span className="font-mono">{planFloors.join(" / ") || "—"}</span> floors. Apply the layout so
+                  planning, the area calculations and the 3D view describe one building set.
+                </span>
+              )}
+            </>
+          )}
+        </div>
+        {engineTowers.length > 0 && !readOnly && (
+          <Button
+            size="sm"
+            variant={inStepWithLayout ? "outline" : "default"}
+            className="h-7 rounded-sm text-xs shrink-0"
+            data-testid="sync-towers-from-layout-button"
+            disabled={syncing}
+            onClick={syncFromLayout}
+          >
+            <RefreshCw className={`h-3 w-3 mr-1 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Applying…" : inStepWithLayout ? "Re-apply layout" : "Apply site layout"}
+          </Button>
+        )}
+      </div>
+
       <Section
         title="Towers"
-        description="Define multiple towers on the plot"
+        description="Count and floors come from the site layout engine — see Plot & Setbacks"
         testid="towers-section"
         actions={
           !readOnly && (
@@ -213,7 +295,7 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
         <Section title={`${t.name} — floor planning`} testid="floor-planning-section">
           <div className="grid grid-cols-2 gap-3">
             <TextField label="Tower name" value={t.name} disabled={readOnly} onChange={(v) => setT("name", v)} testid="tower-name-input" />
-            <NumField label="Floor count" value={t.floors} disabled={readOnly} onChange={(v) => setT("floors", v)} testid="tower-floors-input" />
+            <NumField label="Floor count" suffix={engineTowers.length ? "from site layout" : ""} value={t.floors} disabled={readOnly} onChange={(v) => setT("floors", v)} testid="tower-floors-input" />
             <NumField label="Floor-to-floor height" suffix="m" step={0.1} value={t.floor_height} disabled={readOnly} onChange={(v) => setT("floor_height", v)} testid="tower-floor-height-input" />
             <NumField label="Typical floor plate footprint" suffix="m²" value={t.footprint_area} disabled={readOnly} onChange={(v) => setT("footprint_area", v)} testid="tower-footprint-input" />
             <NumField label="Corridor width" suffix="m" step={0.1} value={t.corridor_width} disabled={readOnly} onChange={(v) => setT("corridor_width", v)} testid="tower-corridor-width-input" />
@@ -416,7 +498,7 @@ export default function PlanningModule({ project, analysis, update, readOnly, pr
             )}
             {!readOnly && (
               <>
-                <Button size="sm" variant="default" className="h-7 rounded-sm text-xs bg-blue-600 hover:bg-blue-700 text-white shadow-xs" data-testid="ai-generate-layout-button"
+                <Button size="sm" variant="ai" className="h-7 rounded-sm text-xs" data-testid="ai-generate-layout-button"
                   disabled={floorLoading} onClick={fetchAiFloorLayout}>
                   <Sparkles className={`h-3 w-3 mr-1 ${floorLoading ? "animate-spin" : ""}`} /> AI Generate
                 </Button>

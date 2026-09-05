@@ -32,19 +32,39 @@ corpus. Hits from that mode are flagged degraded so the caller can say so out lo
 A silently mismatched index is the failure worth guarding hardest: vectors from one
 embedding model scored against queries from another return confident nonsense in perfect
 ranking order. The manifest records the model and the dimension, and a mismatch refuses
-the vectors and drops to keyword-only rather than pretending.
+the vectors and drops to keyword-only rather than pretending. The same manifest is stat-ed
+on every query, because the second way to serve a stale index is to load a good one and
+never notice it was rebuilt underneath.
+
+A query scores a candidate set rather than the corpus. A chunk outside it shares no token
+with the query and answers to none of its designations, so two of the three signals are
+zero and the vector term alone decides it -- and a chunk that cannot reach RELEVANCE_FLOOR
+on that term alone cannot reach it at all. That makes the set an exact reformulation of the
+full scan and not a recall/latency trade: whatever is skipped was going to be dropped. It
+stops being exact the moment a signal can score above zero without a token, a designation
+or a vector, so a fourth signal has to be added to the candidate union as well as the loop.
+
+The keyword normaliser divides by every query token, including the ones the corpus has
+never seen, at a default idf. That reads like an accident and is load-bearing: it makes the
+keyword score a measure of how much of the question was covered. Restricted to tokens the
+corpus holds, a question whose one familiar word is "water" scores a perfect 1.0 against
+the first passage that mentions water, and the empty answer this module exists to make
+possible stops being reachable.
 
 Nothing here computes. Retrieval finds the passage; the engine owns every number in it.
 """
 import argparse
 import hashlib
+import heapq
 import json
 import logging
 import math
 import os
 import random
 import re
+import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from glob import glob
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -75,6 +95,8 @@ INDEX_DIR = os.path.join(_HERE, "codes_index")       # CODES_INDEX_DIR overrides
 W_VECTOR, W_KEYWORD, W_DESIGNATION = 0.55, 0.25, 0.20
 
 RELEVANCE_FLOOR = 0.15    # below this the corpus does not answer the question; say so
+BM25_K1, BM25_B = 1.2, 0.75   # saturation and length normalisation, the usual defaults
+QUERY_CACHE_SIZE = 256    # distinct query vectors kept; a repeat question re-embeds nothing
 MIN_CHUNK_CHARS = 200     # shorter than this is a cross-reference, not a passage
 MAX_CHUNK_CHARS = 1500    # longer than this and the passage has stopped being one idea
 EMBED_BATCH = 64          # chunks per embedding request, not one request per chunk
@@ -161,6 +183,12 @@ SYNONYMS: Dict[str, List[str]] = {
 
 # Precomputed: for each single token that appears in a synonym key, the set of
 # expansion tokens to add.  Built once at import so _expand_query is a fast lookup.
+#
+# NOTE: a multi-word key is registered under EACH of its tokens, so "crack width" fires on
+# the bare word width and "staircase pressure" fires on staircase. That is almost certainly
+# wrong -- but on a sparse corpus the surplus vocabulary is also acting as a recall crutch,
+# and narrowing it to whole-phrase matching made a stair-width query retrieve nothing at
+# all in a bench corpus. Do not change it without measuring on the real corpus first.
 _SYN_LOOKUP: Dict[str, Set[str]] = {}
 for _syn_key, _syn_vals in SYNONYMS.items():
     _key_tokens = _TOKEN.findall(_syn_key.lower())
@@ -608,13 +636,59 @@ def _embed(texts: Sequence[str], task_type: str) -> List[List[float]]:
         raise ai.AIFailed("google-genai is not installed. Run: pip install google-genai") from exc
 
     model = _embed_model()
-    client = genai.Client(api_key=key)
+    client = _client(genai, key)
     config = _embed_config(task_type)
     out: List[List[float]] = []
     for start in range(0, len(texts), EMBED_BATCH):
         batch = list(texts[start:start + EMBED_BATCH])
         out.extend(_response_values(_embed_call(client, model, batch, config), len(batch)))
     return out
+
+
+_CLIENTS: Dict[str, Any] = {}
+_CLIENT_LOCK = threading.Lock()
+_QUERY_VECTORS: "OrderedDict[Tuple[str, str], List[float]]" = OrderedDict()
+_QUERY_LOCK = threading.Lock()
+
+
+def _client(genai: Any, key: str) -> Any:
+    """One SDK client per key, reused.
+
+    Constructing it per call builds a fresh connection pool for a single request, which is
+    a real share of the latency of embedding one short query -- the build amortises it over
+    a whole corpus, a search cannot amortise it over anything.
+    """
+    cached = _CLIENTS.get(key)
+    if cached is not None:
+        return cached
+    with _CLIENT_LOCK:
+        if key not in _CLIENTS:
+            _CLIENTS[key] = genai.Client(api_key=key)
+        return _CLIENTS[key]
+
+
+def _embed_query(query: str) -> List[float]:
+    """The query vector, remembered for the last QUERY_CACHE_SIZE distinct questions.
+
+    The same question arrives more than once in ordinary use: a retry, two panels on one
+    screen, the APT path asking what the ask path just asked. Each repeat otherwise pays a
+    network round trip before any ranking can begin. Keyed by model as well as text, so
+    reconfiguring GEMINI_EMBED_MODEL can never serve one model's vector against another
+    model's index -- the same mismatch _load refuses on the document side.
+    """
+    cache_key = (_embed_model(), query)
+    with _QUERY_LOCK:
+        hit = _QUERY_VECTORS.get(cache_key)
+        if hit is not None:
+            _QUERY_VECTORS.move_to_end(cache_key)
+            return hit
+    vector = _embed([query], TASK_QUERY)[0]         # outside the lock: this is network I/O
+    with _QUERY_LOCK:
+        _QUERY_VECTORS[cache_key] = vector
+        _QUERY_VECTORS.move_to_end(cache_key)
+        while len(_QUERY_VECTORS) > QUERY_CACHE_SIZE:
+            _QUERY_VECTORS.popitem(last=False)
+    return vector
 
 
 def _normalise(matrix: np.ndarray) -> np.ndarray:
@@ -626,12 +700,18 @@ def _normalise(matrix: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- index storage
 _INDEX: Optional[Dict[str, Any]] = None
+_INDEX_STAMP: Optional[Tuple[str, int, int]] = None
+_INDEX_LOCK = threading.Lock()
 
 
 def clear_cache() -> None:
-    """Drop the cached index so the next query reloads it from disk."""
-    global _INDEX
-    _INDEX = None
+    """Drop the cached index and the remembered query vectors."""
+    global _INDEX, _INDEX_STAMP
+    with _INDEX_LOCK:
+        _INDEX = None
+        _INDEX_STAMP = None
+    with _QUERY_LOCK:
+        _QUERY_VECTORS.clear()
 
 
 def _write_json(path: str, payload: Any) -> None:
@@ -656,7 +736,9 @@ def _read_raw(directory: str) -> Dict[str, Any]:
     vectors_path = os.path.join(directory, VECTORS_FILE)
     if out["manifest"].get("vectors") and os.path.exists(vectors_path):
         try:
-            out["vectors"] = np.load(vectors_path)
+            # allow_pickle=False explicitly: this file is read at import-adjacent time
+            # from a directory an operator writes to, and a pickled .npy executes on load.
+            out["vectors"] = np.load(vectors_path, allow_pickle=False)
         except Exception as exc:
             logger.warning("Could not read %s: %s", vectors_path, exc)
     return out
@@ -668,7 +750,9 @@ def _load(directory: str) -> Dict[str, Any]:
     chunks, manifest, vectors = raw["chunks"], raw["manifest"], raw["vectors"]
     if not chunks:
         return {"available": False, "degraded": True, "chunks": [], "vectors": None,
-                "manifest": manifest, "bags": [], "keys": [], "dl": [], "avgdl": 1.0, "idf": {},
+                "manifest": manifest, "bags": [], "keys": [], "dl": [],
+                "avgdl": 1.0, "idf": {}, "postings": {}, "by_clause": {}, "by_code": {},
+                "by_code_id": {},
                 "reason": (f"No clause index in {directory}. Put the code text in "
                            f"{_corpus_dir()} as .txt or .md and run: "
                            f"python -m codesearch build")}
@@ -697,42 +781,101 @@ def _load(directory: str) -> Dict[str, Any]:
                       f"chunks at dimension {dim}. Rebuild with: "
                       f"python -m codesearch build --force")
             vectors = None
+    if vectors is not None:
+        # One contiguous float32 block is what the query dot product wants. A matrix that
+        # arrives as float64 otherwise doubles the resident size of the index and the cost
+        # of every query against it, for precision no cosine ranking can use.
+        vectors = np.ascontiguousarray(vectors, dtype=np.float32)
 
-    # The token bags and designation sets are built once per load rather than per query:
-    # they are pure functions of the chunk, and rebuilding them on every search would make
-    # the keyword signal cost the whole corpus each time.
+    # Everything below is a pure function of the chunks, so it is built once per load
+    # rather than per query. Rebuilding it on every search would make the keyword signal
+    # cost the whole corpus each time.
     bags = [_tokens(" ".join((c.get("text", ""), c.get("heading", ""),
                               C.CODE_KEYWORDS.get(c.get("code_id") or "", ""))))
             for c in chunks]
     keys = [_designations(c) for c in chunks]
 
-    # BM25 statistics: IDF weights and document lengths, computed once at load.
-    all_tokens: Dict[str, int] = {}
+    # BM25 statistics, and the postings list that keeps a query from touching chunks that
+    # share no word with it. Document frequency and postings come out of the same pass,
+    # because they are the same walk over the same bags.
+    document_frequency: Dict[str, int] = {}
+    postings: Dict[str, List[int]] = {}
+    for i, bag in enumerate(bags):
+        for t in bag:
+            document_frequency[t] = document_frequency.get(t, 0) + 1
+            postings.setdefault(t, []).append(i)
     dl = [len(b) for b in bags]
-    for b in bags:
-        for t in b:
-            all_tokens[t] = all_tokens.get(t, 0) + 1
     avgdl = sum(dl) / len(dl) if dl else 1.0
     N = len(chunks)
-    idf = {t: math.log((N - df + 0.5) / (df + 0.5) + 1.0) for t, df in all_tokens.items()}
+    idf = {t: math.log((N - df + 0.5) / (df + 0.5) + 1.0)
+           for t, df in document_frequency.items()}
+
+    # Which rows a designation or a standard could possibly match, so those two signals are
+    # dict lookups over a handful of chunks instead of a walk over all of them. Codes are
+    # filed under their part-less base as well, because _designation_score compares bases.
+    by_clause: Dict[str, List[int]] = {}
+    by_code: Dict[str, List[int]] = {}
+    by_code_id: Dict[str, List[int]] = {}
+    for i, chunk in enumerate(chunks):
+        for designation in keys[i]:
+            by_clause.setdefault(designation, []).append(i)
+        code = chunk.get("code_norm") or ""
+        if code:
+            by_code.setdefault(code, []).append(i)
+            base = citations._base(code)
+            if base and base != code:
+                by_code.setdefault(base, []).append(i)
+        by_code_id.setdefault(chunk.get("code_id") or "", []).append(i)
 
     return {"available": True, "reason": reason, "degraded": vectors is None,
             "chunks": chunks, "vectors": vectors, "manifest": manifest,
-            "bags": bags, "keys": keys, "dl": dl, "avgdl": avgdl, "idf": idf}
+            "bags": bags, "keys": keys, "dl": dl, "avgdl": avgdl, "idf": idf,
+            "postings": postings, "by_clause": by_clause, "by_code": by_code,
+            "by_code_id": by_code_id}
+
+
+def _stamp(directory: str) -> Tuple[str, int, int]:
+    """What identifies the index on disk, cheap enough to check on every query.
+
+    build() replaces manifest.json through os.replace, so its modification time and size
+    move with the index it describes. Without this check the process answering queries
+    keeps serving whatever it loaded first, and a rebuild looks like it did nothing until
+    somebody restarts the server -- which is indistinguishable, from the outside, from a
+    build that silently failed.
+    """
+    try:
+        st = os.stat(os.path.join(directory, MANIFEST_FILE))
+        return (directory, int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return (directory, 0, 0)
 
 
 def _index() -> Dict[str, Any]:
-    """The cached index, loaded on first use. Never raises."""
-    global _INDEX
-    if _INDEX is None:
+    """The cached index, reloaded when the copy on disk changes. Never raises.
+
+    Reached from a thread pool, so the load is done under a lock and published in one
+    assignment: two requests arriving on a cold cache must not each build the postings and
+    then race to install half of them.
+    """
+    global _INDEX, _INDEX_STAMP
+    directory = _index_dir()
+    stamp = _stamp(directory)
+    cached, cached_stamp = _INDEX, _INDEX_STAMP     # one read each; no torn pair
+    if cached is not None and cached_stamp == stamp:
+        return cached
+    with _INDEX_LOCK:
+        if _INDEX is not None and _INDEX_STAMP == stamp:
+            return _INDEX
         try:
-            _INDEX = _load(_index_dir())
+            loaded = _load(directory)
         except Exception as exc:
             logger.warning("Could not load the clause index: %s", exc)
-            _INDEX = {"available": False, "reason": f"Could not load the clause index: {exc}",
+            loaded = {"available": False, "reason": f"Could not load the clause index: {exc}",
                       "degraded": True, "chunks": [], "vectors": None, "manifest": {},
-                      "bags": [], "keys": [], "dl": [], "avgdl": 1.0, "idf": {}}
-    return _INDEX
+                      "bags": [], "keys": [], "dl": [], "avgdl": 1.0, "idf": {},
+                      "postings": {}, "by_clause": {}, "by_code": {}, "by_code_id": {}}
+        _INDEX, _INDEX_STAMP = loaded, stamp
+        return loaded
 
 
 def index_status() -> Dict[str, Any]:
@@ -972,9 +1115,12 @@ def search(query: str, k: int = 5, code_id: Optional[str] = None) -> List[Dict[s
     chunks = idx["chunks"]
     if not chunks:
         return []
-    rows = [i for i, c in enumerate(chunks) if code_id is None or c.get("code_id") == code_id]
-    if not rows:
-        return []
+    allowed: Optional[Set[int]] = None
+    if code_id is not None:
+        rows = idx.get("by_code_id", {}).get(code_id) or []
+        if not rows:
+            return []
+        allowed = set(rows)
 
     raw_q_tokens = _tokens(query)
     q_tokens = _expand_query(raw_q_tokens)
@@ -986,9 +1132,14 @@ def search(query: str, k: int = 5, code_id: Optional[str] = None) -> List[Dict[s
     similarity: Optional[np.ndarray] = None
     if idx["vectors"] is not None:
         try:
-            vector = np.asarray(_embed([query], TASK_QUERY)[0], dtype=np.float32)
+            vector = np.asarray(_embed_query(query), dtype=np.float32)
             norm = float(np.linalg.norm(vector))
-            similarity = idx["vectors"][rows] @ (vector / norm) if norm else None
+            if norm:
+                # The whole matrix, not a fancy-indexed slice of it. Selecting rows first
+                # copies the entire index on every unfiltered query -- tens of megabytes to
+                # produce an operand BLAS was going to stream anyway -- and code_id is far
+                # cheaper applied to the scores that come out than to the matrix going in.
+                similarity = idx["vectors"] @ (vector / norm)
             degraded = similarity is None
         except (ai.AIUnavailable, ai.AIFailed) as exc:
             logger.info("Query embedding unavailable, answering keyword-only: %s", exc)
@@ -1005,8 +1156,49 @@ def search(query: str, k: int = 5, code_id: Optional[str] = None) -> List[Dict[s
     else:
         w_vector, w_keyword, w_designation = W_VECTOR, W_KEYWORD, W_DESIGNATION
 
+    bags = idx["bags"]
+    idf_map = idx.get("idf", {})
+    dl_rows = idx.get("dl", [])
+    avg_dl = idx.get("avgdl", 1.0) or 1.0
+    k1, b = BM25_K1, BM25_B
+
+    # Query-level constants, hoisted out of the scoring loop, which is where max_bm25 used
+    # to live -- it never varied by chunk and was paid for once per chunk regardless.
+    #
+    # The normaliser deliberately sums over EVERY query token, absent ones included, at a
+    # default idf. That looks like it under-rates the keyword signal and it is in fact the
+    # load-bearing part: it makes the score a measure of how much of the question the chunk
+    # covered. Restrict it to tokens the corpus holds and a question whose only familiar
+    # word is "water" scores a perfect 1.0 against the first passage mentioning water, and
+    # the honest empty answer for an unanswerable question stops being possible.
+    scoring_tokens = [t for t in q_tokens if t in idf_map]
+    max_bm25 = sum(idf_map.get(t, 0.5) * (k1 + 1) / (1 + k1) for t in q_tokens)
+
+    # The candidate set. A chunk outside it shares no word with the query and answers to
+    # none of its designations, so keyword and designation are both zero and the vector
+    # term alone decides it; anything that cannot reach RELEVANCE_FLOOR on that term alone
+    # cannot reach it at all. Skipping those rows is not an approximation of the full scan,
+    # it is the same result without visiting the chunks that were always going to be
+    # dropped -- which, on a real corpus and an ordinary question, is nearly all of them.
+    candidates: Set[int] = set()
+    postings = idx.get("postings", {})
+    for t in scoring_tokens:
+        candidates.update(postings.get(t, ()))
+    if q_clause:
+        candidates.update(idx.get("by_clause", {}).get(q_clause, ()))
+    if q_code:
+        by_code = idx.get("by_code", {})
+        candidates.update(by_code.get(q_code, ()))
+        candidates.update(by_code.get(citations._base(q_code), ()))
+    if similarity is not None and w_vector > 0:
+        candidates.update(np.flatnonzero(similarity >= RELEVANCE_FLOOR / w_vector).tolist())
+    if allowed is not None:
+        candidates &= allowed
+    if not candidates:
+        return []
+
     hits: List[Dict[str, Any]] = []
-    for position, i in enumerate(rows):
+    for i in sorted(candidates):        # row order, so equal scores break the way they did
         chunk = chunks[i]
         # Each signal is already an absolute 0-1 measure and is used as it stands. Rescaling
         # them across the candidate set would hand the best chunk a 1.0 on every query,
@@ -1014,22 +1206,17 @@ def search(query: str, k: int = 5, code_id: Optional[str] = None) -> List[Dict[s
         # -- which is the one case it exists for.
         vector_score = 0.0
         if similarity is not None:
-            vector_score = max(0.0, min(1.0, float(similarity[position])))
-        bag = idx["bags"][i]
-        if q_tokens and bag:
-            k1, b = 1.2, 0.75
-            doc_len = idx["dl"][i] if idx.get("dl") else len(bag)
-            avg_dl = idx.get("avgdl", 1.0) or 1.0
-            idf_map = idx.get("idf", {})
-            raw_bm25 = 0.0
-            for t in q_tokens & bag:
-                tf = 1.0
-                t_idf = idf_map.get(t, 0.5)
-                raw_bm25 += t_idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_dl))
-            max_bm25 = sum(idf_map.get(t, 0.5) * (k1 + 1) / (1 + k1) for t in q_tokens)
-            keyword_score = max(0.0, min(1.0, raw_bm25 / max_bm25)) if max_bm25 > 0 else 0.0
-        else:
-            keyword_score = 0.0
+            vector_score = max(0.0, min(1.0, float(similarity[i])))
+        keyword_score = 0.0
+        bag = bags[i]
+        if max_bm25 > 0 and bag:
+            # Term frequency is 1 for every match, because the bag records presence, not
+            # counts. That makes the per-term factor identical across terms, so it comes
+            # out of the sum and the chunk costs one idf lookup per matched token.
+            doc_len = dl_rows[i] if dl_rows else len(bag)
+            saturation = (k1 + 1) / (1 + k1 * (1 - b + b * doc_len / avg_dl))
+            matched = sum(idf_map[t] for t in scoring_tokens if t in bag)
+            keyword_score = max(0.0, min(1.0, matched * saturation / max_bm25))
         designation_score = _designation_score(chunk, idx["keys"][i], q_code, q_clause)
         score = (w_vector * vector_score + w_keyword * keyword_score
                  + w_designation * designation_score)
@@ -1041,8 +1228,8 @@ def search(query: str, k: int = 5, code_id: Optional[str] = None) -> List[Dict[s
                      "keyword_score": round(keyword_score, 4),
                      "designation_score": round(designation_score, 4),
                      "degraded": degraded})
-    hits.sort(key=lambda h: h["score"], reverse=True)
-    return hits[:max(0, k)]
+    # nlargest rather than a full sort: k is five and the passing set can be thousands.
+    return heapq.nlargest(max(0, k), hits, key=lambda h: h["score"])
 
 
 # ---------------------------------------------------------------- CLI
@@ -1079,8 +1266,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if summary["vectors"]:
         print(f"vectors   {summary['embedded']} embedded, {summary['reused_vectors']} reused "
               f"at dimension {summary['dimension']} with {summary['embed_model']}")
-    else:
+    elif not summary["chunks"]:
+        # Nothing was embedded because nothing was chunked. Telling an operator to set a key
+        # they may well have set already sends them to debug the wrong half of the system.
+        print("vectors   none -- nothing to embed")
+    elif not (os.environ.get("GEMINI_API_KEY") or "").strip():
         print("vectors   none -- retrieval will run keyword-only (set GEMINI_API_KEY to embed)")
+    else:
+        print("vectors   none -- retrieval will run keyword-only (see the warnings above)")
     for entry in summary["skipped"]:
         print(f"  skipped {entry['file']}: {entry['reason']}")
     for warning in summary["warnings"]:

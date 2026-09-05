@@ -171,3 +171,24 @@ def test_engineering_route_exposes_the_new_modules(client_and_project):
     assert mods["grid"]["beam_layout"]["summary"]["beam_count"] > 0
     for key in ("embodied_carbon_tco2e", "carbon_per_sqm_kg", "trees_required"):
         assert key in data["summary"], key
+
+
+def test_every_report_id_downloads_over_http(client_and_project):
+    """Building the PDF in-process is not the same as the route serving it: the id has to
+    survive the handler's own guard, which checks it against REPORT_TITLES."""
+    import reports as R
+    client, pid = client_and_project
+    for key in R.REPORT_TITLES:
+        r = client.get(f"/api/projects/{pid}/reports/{key}")
+        assert r.status_code == 200, f"{key}: {r.status_code} {r.text[:120]}"
+        assert r.content.startswith(b"%PDF"), key
+
+
+def test_every_module_alias_resolves_over_http(client_and_project):
+    """Typing a module name into the URL should land on the report carrying its numbers."""
+    import reports as R
+    client, pid = client_and_project
+    for alias, target in R.MERGED_INTO.items():
+        assert target in R.REPORT_TITLES, alias
+        r = client.get(f"/api/projects/{pid}/reports/{alias}")
+        assert r.status_code == 200, f"{alias}: {r.status_code}"

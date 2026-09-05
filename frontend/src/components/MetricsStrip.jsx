@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import { int, money, num } from "../lib/format";
 
 const Item = ({ label, value, unit, testid, tone, vertical }) => (
@@ -26,7 +27,12 @@ const Item = ({ label, value, unit, testid, tone, vertical }) => (
  *                            for a strip. Same figures either way -- only the layout
  *                            direction and each item's dividing border change.
  */
-export const MetricsStrip = ({ analysis, duration, vertical = false }) => {
+/**
+ * @param {"fresh"|"recomputing"|"stale"} state  whether these figures were computed from
+ *        the project as it stands. A stale rail is dimmed and says so: a number nobody can
+ *        tell is out of date is more dangerous than no number at all.
+ */
+export const MetricsStrip = ({ analysis, duration, vertical = false, state = "fresh", at = null }) => {
   if (!analysis)
     return vertical ? (
       <div className="w-full bg-white" />
@@ -35,15 +41,30 @@ export const MetricsStrip = ({ analysis, duration, vertical = false }) => {
     );
   const a = analysis.areas;
   const c = analysis.compliance;
+  const dimmed = state === "stale" ? "opacity-60" : "";
   return (
     <div
       className={
-        vertical
+        (vertical
           ? "flex flex-col overflow-y-auto bg-white"
-          : "flex overflow-x-auto border-b border-slate-200 bg-white sticky top-0 z-20"
+          : "flex overflow-x-auto border-b border-slate-200 bg-white sticky top-0 z-20")
+        + (dimmed ? ` ${dimmed}` : "")
       }
       data-testid="metrics-strip"
     >
+      {state === "stale" && (
+        <div
+          className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
+          data-testid="metrics-stale-banner"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+          <span>
+            <span className="font-semibold">Not recalculated.</span> These figures are from
+            {at ? ` ${at.toLocaleTimeString()}` : " an earlier version of the project"} and do
+            not reflect your latest edits. Retrying…
+          </span>
+        </div>
+      )}
       <Item vertical={vertical} label="Plot Area" value={num(a.plot_area_sqm, 0)} unit="m²" testid="metric-plot-area" />
       <Item vertical={vertical} label="Carpet" value={num(a.carpet_area_sqm, 0)} unit="m²" testid="metric-carpet" />
       <Item vertical={vertical} label="Built-up" value={num(a.builtup_area_sqm, 0)} unit="m²" testid="metric-builtup" />

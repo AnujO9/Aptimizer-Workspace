@@ -43,3 +43,18 @@ export async function downloadFile(path, filename) {
   link.remove();
   window.URL.revokeObjectURL(url);
 }
+
+/** Push the site layout engine's packed blocks into the project's tower list.
+ *
+ *  The engine decides how many buildings the land takes and how many floors each carries,
+ *  so Apartment Planning and the 3D model read those numbers from here rather than each
+ *  keeping their own. `siteLayout` is the layout the caller just computed — it is sent
+ *  because it is usually still ahead of the autosaved copy on the server.
+ */
+export const syncTowersFromLayout = async (projectId, siteLayout) => {
+  if (!projectId) return null;
+  const { data } = await api.post(`/projects/${projectId}/towers/sync-from-layout`, {
+    site_layout: siteLayout || null,
+  });
+  return data;
+};

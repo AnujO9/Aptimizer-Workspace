@@ -100,6 +100,10 @@ frontend/node_modules/.cache/default-development/9.pack
 # Local tooling / runtime artifacts (not part of the app)
 backend_dev.log
 frontend_dev.log
+# Same intent as the two above, by glob: a dev server's stderr lands in whatever the
+# operator redirected it to, and frontend_err.log slipped past two exact names.
+*_dev.log
+*_err.log
 .emergent/
 .freebuff/
 .claude/settings.local.json
@@ -117,6 +121,24 @@ frontend_dev.log
 # `cd backend && python -m codesearch build`.
 backend/codes_corpus/
 backend/codes_index/
+
+# Local dev scripts under backend/. None is imported by the app or by the test suite --
+# verified by importing server and checking sys.modules, not by grepping -- so none of
+# them can break a deployment by being absent. They are one-off probes and measurement
+# harnesses kept on the working copy.
+#
+# To keep any of them in the repo after all:  git add -f backend/<name>.py
+backend/baseline.py
+backend/containcheck.py
+backend/e2e.py
+backend/kdbg.py
+backend/plancheck.py
+backend/probe.py
+backend/revtest.py
+backend/roadprobe.py
+backend/run_check.py
+backend/shape.py
+backend/sweep.py
 
 # Keep the documented template; real secrets stay ignored above.
 !.env.example
