@@ -225,3 +225,67 @@ def test_rwh_rainfall_defaults_to_the_project_city_not_a_flat_900():
 def test_explicit_rainfall_override_still_wins():
     base, _ = analyse(project(utility_config={"annual_rainfall_mm": 1234}))
     assert base["utilities"]["annual_rainfall_mm"] == 1234
+
+
+# ---------------------------------------------------------------- 5. code version
+def test_the_clause_card_cannot_drift_from_the_constant_it_describes():
+    """The card said "Travel 22.5 m" long after FIRE was corrected to 30 m.
+
+    The IS/NBC Engineering module renders CODE_LIBRARY beside the compliance check that
+    reads FIRE, so the screen showed two numbers for one rule. Fixing the literal fixed
+    that instance; formatting the card from the constant is what stops the next one.
+    """
+    card = next(e for e in C.CODE_LIBRARY if e["id"] == "nbc4")
+    assert f"Travel {C.FIRE['max_travel_m']:g} m" in card["key_value"]
+    assert f"> {C.FIRE['fire_lift_above_m']:g} m" in card["key_value"]
+    assert "22.5" not in card["key_value"]
+
+
+def test_projects_are_checked_against_nbc_2016_unless_told_otherwise():
+    """SP 7:2026 withdrew NBC 2016 nationally, but state bye-laws still reference it and
+    that is what an approval is measured against. The default has to stay there."""
+    assert C.DEFAULT_CODE_VERSION == C.NBC_2016
+    assert englib.DEFAULT_ENGINEERING["code_version"] == C.NBC_2016
+    _, eng = analyse(project())
+    assert eng["code_version"]["id"] == C.NBC_2016
+    assert eng["modules"]["fire"]["unchecked"] is False
+    assert eng["modules"]["fire"]["checks"], "NBC 2016 has the values, so it must check"
+
+
+def test_an_unread_threshold_refuses_every_operation_a_check_would_perform():
+    """The sentinel is the guarantee. A blank that compared as False would pass some
+    checks and fail others, and both would be rendered in the same shape as a finding."""
+    unread = C.fire_table(C.SP7_2026)["max_travel_m"]
+    assert unread is C.UNREAD
+    for label, op in (("bool", lambda: bool(unread)),
+                      ("compare", lambda: 30.0 > unread),
+                      ("float", lambda: float(unread)),
+                      ("arithmetic", lambda: unread + 1)):
+        with pytest.raises(C.CodeValueUnread):
+            op()
+    assert str(unread) == "UNREAD", "must stay printable so a log line cannot explode"
+
+
+def test_sp7_refuses_to_score_fire_safety_rather_than_scoring_a_half_empty_table():
+    """Not a fallback to the 2016 numbers, and not a partial score either. "3 of 8 passed"
+    computed from a table that is half empty reads as a finding about the building when it
+    is a finding about the table."""
+    _, eng = analyse(project(engineering={"code_version": C.SP7_2026}))
+    fire = eng["modules"]["fire"]
+    assert eng["code_version"]["id"] == C.SP7_2026
+    assert fire["unchecked"] is True
+    assert fire["checks"] == [] and fire["score"] is None
+    assert len(fire["unread_values"]) == len(C.fire_table(C.SP7_2026))
+    assert any("not been read" in w["message"] for w in fire["warnings"])
+
+    # The water module still answers the IS 1172 half, and declines to invent the NBC half.
+    water = eng["modules"]["water"]
+    reserve = outputs(water)["Fire reserve in sump"]
+    assert reserve["value"] == 0 and "not read" in reserve["note"]
+    assert outputs(water)["Total daily demand"]["value"] > 0
+
+
+def test_an_unknown_code_version_falls_back_to_the_default_and_says_which():
+    _, eng = analyse(project(engineering={"code_version": "sp7_2027_typo"}))
+    assert eng["code_version"]["id"] == C.NBC_2016
+    assert eng["modules"]["fire"]["checks"], "the fallback must be a version that can check"

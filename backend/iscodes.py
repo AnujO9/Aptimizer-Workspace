@@ -3,6 +3,94 @@ Update values here when a code is revised — no module hardcodes its own number
 """
 import math
 
+# ---------------------------------------------------------------- code version
+# NBC 2016 was withdrawn on 30 April 2026 and replaced by SP 7:2026. Both facts matter and
+# they pull in opposite directions: the document this platform implements no longer
+# formally exists, and it is still what state bye-laws reference, so it is still what an
+# approval is actually checked against. Neither "keep NBC 2016 and say nothing" nor "switch
+# to SP 7" is honest. The platform carries both and reports which one a result came from.
+NBC_2016 = "nbc2016"
+SP7_2026 = "sp7_2026"
+DEFAULT_CODE_VERSION = NBC_2016
+
+
+class CodeValueUnread(RuntimeError):
+    """A threshold that has not been read from its standard was used in a check."""
+
+
+class _Unread:
+    """A value a standard is known to carry that nobody has read out of it yet.
+
+    Deliberately not None and not a number. Every operation a compliance check would
+    perform on a threshold -- comparing, formatting into a required-value string, doing
+    arithmetic -- raises instead of returning something. A blank that compares as False
+    would silently pass some checks and fail others, and both results would be presented
+    in the same shape as a real finding, which is the one outcome worse than refusing.
+
+    `is`, `==` and hashing still work, so callers can test for it and tables can hold it.
+    repr and str are readable so a stray log line prints "unread" rather than exploding.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "UNREAD"
+
+    __str__ = __repr__
+
+    def _refuse(self, *_args, **_kwargs):
+        raise CodeValueUnread(
+            "This threshold has not been read from the standard, so nothing can be checked "
+            "against it. Read the clause and set the value, or check against a code version "
+            "that carries one.")
+
+    # Truth, number and ordering protocols all refuse. __eq__/__hash__ are left alone.
+    __bool__ = __float__ = __int__ = __index__ = _refuse
+    __lt__ = __le__ = __gt__ = __ge__ = _refuse
+    __add__ = __radd__ = __sub__ = __rsub__ = _refuse
+    __mul__ = __rmul__ = __truediv__ = __rtruediv__ = _refuse
+    __floordiv__ = __rfloordiv__ = __round__ = _refuse
+
+
+UNREAD = _Unread()
+
+CODE_VERSIONS = {
+    NBC_2016: {
+        "id": NBC_2016,
+        "label": "NBC 2016",
+        "title": "National Building Code of India 2016",
+        "complete": True,
+        "status": ("Withdrawn at national level on 30 April 2026. Still the document most "
+                   "state bye-laws reference, so it remains what local approvals check "
+                   "against."),
+    },
+    SP7_2026: {
+        "id": SP7_2026,
+        "label": "SP 7:2026",
+        "title": "National Building Construction Standards, SP 7:2026",
+        "complete": False,
+        "status": ("Replaces NBC 2016 at national level; voluntary until a state adopts it "
+                   "into its bye-laws. No value has been read from the standard itself, so "
+                   "this version refuses to check rather than report a result."),
+    },
+}
+
+
+def code_version(value=None):
+    """Normalise to a known version id. Anything unrecognised becomes the default."""
+    v = str(value or "").strip().lower()
+    return v if v in CODE_VERSIONS else DEFAULT_CODE_VERSION
+
+
+def version_label(value=None):
+    return CODE_VERSIONS[code_version(value)]["label"]
+
+
+def unread_keys(table):
+    """Which keys of a constant table have not been read from the standard."""
+    return sorted(k for k, v in table.items() if v is UNREAD)
+
+
 # ---------------------------------------------------------------- clause registry
 CLAUSES = {
     "dead_load": {"code": "IS 875 (Part 1):1987", "clause": "Table 1", "topic": "Unit weights of building materials"},
@@ -197,8 +285,24 @@ CEMENT_TYPES = {"OPC 43": 43, "OPC 53": 53, "PPC": 43}
 # ---------------------------------------------------------------- IS 1172 / NBC 9
 WATER_LPCD = {"domestic": 135, "flushing": 45, "external": 15}
 SEWAGE_FACTOR = 0.80
-FIRE_STATIC_STORAGE_L = 50000     # NBC Part 4 Table 7, > 15 m
-FIRE_RESERVE_IN_SUMP_L = 25000
+# NBC Part 4 Table 7. The height that triggers all three lives here rather than as a bare
+# 15 in m5_water: it is the single value SP 7:2026 is most reported to move, and a magic
+# number in a module is exactly what a version switch cannot reach.
+_FIRE_WATER_NBC_2016 = {
+    "high_rise_above_m": 15.0,
+    "static_storage_l": 50000,
+    "reserve_in_sump_l": 25000,
+}
+_FIRE_WATER_SP7_2026 = {k: UNREAD for k in _FIRE_WATER_NBC_2016}
+FIRE_WATER_BY_VERSION = {NBC_2016: _FIRE_WATER_NBC_2016, SP7_2026: _FIRE_WATER_SP7_2026}
+
+FIRE_STATIC_STORAGE_L = _FIRE_WATER_NBC_2016["static_storage_l"]      # legacy aliases
+FIRE_RESERVE_IN_SUMP_L = _FIRE_WATER_NBC_2016["reserve_in_sump_l"]
+
+
+def fire_water(version=None):
+    """Fire storage constants for a code version. Unread entries are UNREAD."""
+    return FIRE_WATER_BY_VERSION[code_version(version)]
 OHT_FRACTION = 1 / 3
 STP_TYPES = [(50, "SAFF (submerged aerated fixed film) — compact, low O&M"),
              (200, "SBR (sequential batch reactor) — best fit for mid-size projects"),
@@ -218,7 +322,8 @@ PARKING = {
 }
 
 # ---------------------------------------------------------------- NBC fire
-FIRE = {
+# ---------------------------------------------------------------- NBC Part 4 / SP 7 fire
+_FIRE_NBC_2016 = {
     # NBC 2016 Part 4 Table 4 gives 30 m for Group A-2 residential. This was previously
     # 22.5 m here while engine.DEFAULT_RULES used 30 m, so the same project could pass
     # Compliance and fail Fire Safety on one number. Both now read this key.
@@ -231,6 +336,26 @@ FIRE = {
     # governing width for a project is the larger of the two.
     "corridor_min_m": 1.5,
 }
+
+# Every value UNREAD, on purpose. Secondary sources report the high-rise trigger moving
+# from 15 m to 24 m and Part 4 folding into the restructured six-part document, but the
+# standard itself has not been read. Writing 24.0 in on that basis would produce a
+# compliance result that looks checked and is not — a number carrying the authority of a
+# clause nobody opened. The whole point of the version dimension is that this stays empty
+# until someone reads SP 7:2026 and fills it in clause by clause.
+_FIRE_SP7_2026 = {k: UNREAD for k in _FIRE_NBC_2016}
+
+FIRE_BY_VERSION = {NBC_2016: _FIRE_NBC_2016, SP7_2026: _FIRE_SP7_2026}
+
+# Legacy alias. engine.DEFAULT_RULES is a fixed NBC 2016 rule set built at import, and the
+# accuracy tests assert on these numbers, so this stays bound to the 2016 table by name.
+# Anything that varies with the project's chosen version must call fire_table() instead.
+FIRE = _FIRE_NBC_2016
+
+
+def fire_table(version=None):
+    """The fire constants for a code version. Unread entries are UNREAD, never a number."""
+    return FIRE_BY_VERSION[code_version(version)]
 
 # ---------------------------------------------------------------- NBC accessibility
 ACCESS = {
@@ -526,8 +651,16 @@ CODE_LIBRARY = [
     {"id": "nbc3", "code": "NBC 2016 Part 3", "topic": "Development control, FAR, setbacks, accessibility",
      "key_value": "Ramp 1:12; door 900 mm; corridor 1200 mm (1500 preferred); 1 accessible bay per 50",
      "clause": "Cl. 8, 13"},
+    # Built from the constants rather than typed out beside them. The literal here read
+    # "Travel 22.5 m" long after FIRE was corrected to 30.0, so the clause card and the
+    # compliance check beside it showed two numbers for one rule on the same screen --
+    # which is the failure a single source of truth exists to prevent. Formatting it means
+    # the card cannot say anything the engine is not checking.
     {"id": "nbc4", "code": "NBC 2016 Part 4", "topic": "Fire & life safety",
-     "key_value": "Travel 22.5 m; 2 stairs > 24 m at 1.5 m width; refuge every 7th floor > 24 m; fire lift > 30 m",
+     "key_value": ("Travel {max_travel_m:g} m; 2 stairs > {two_stair_height_m:g} m at "
+                   "{stair_min_width_m:g} m width; refuge every {refuge_every_floors}th "
+                   "floor > {refuge_above_m:g} m; fire lift > {fire_lift_above_m:g} m"
+                   ).format(**_FIRE_NBC_2016),
      "clause": "Cl. 4.6, 4.7, 4.9, 4.14"},
     {"id": "nbc8", "code": "NBC 2016 Part 8 / SP:21", "topic": "Building services & parking",
      "key_value": "1 ECS per 100 m² built-up; ramp 1:8; headroom 2.4 m; aisle 6.0 m; 1 ECS = 3 two-wheelers",

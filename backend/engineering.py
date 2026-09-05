@@ -23,6 +23,10 @@ def check(label, ok, actual, required, clause_key, note=""):
 
 
 DEFAULT_ENGINEERING = {
+    # Which building code a project is checked against. Defaults to NBC 2016 because that
+    # is what state bye-laws still reference, which is what an approval is measured by --
+    # SP 7:2026 withdrew it nationally but is voluntary until a state adopts it.
+    "code_version": C.DEFAULT_CODE_VERSION,
     "city": "Bengaluru",
     "state": "Karnataka",
     "soil_type": "dense sand",
@@ -74,6 +78,10 @@ def cfg(project):
     c = {**DEFAULT_ENGINEERING, **(project.get("engineering") or {})}
     soil = str(c.get("soil_type") or "").replace("_", " ").strip().lower()
     c["soil_type"] = soil if soil in C.SOILS else DEFAULT_ENGINEERING["soil_type"]
+    # Normalised here rather than at each use, so a project carrying a typo or a version
+    # this build does not know about is checked against the default and says so, instead
+    # of raising deep inside a module or silently keying an empty table.
+    c["code_version"] = C.code_version(c.get("code_version"))
     return c
 
 
@@ -485,9 +493,26 @@ def m5_water(project, base, e):
     dom, flush, ext = w["domestic_lpd"], w["flushing_lpd"], w["external_lpd"]
     total = w["total_lpd"]
 
-    tall = b["height_m"] > 15
-    fire_reserve = C.FIRE_RESERVE_IN_SUMP_L if tall else 0
-    fire_static = C.FIRE_STATIC_STORAGE_L if tall else 0
+    # The high-rise trigger was a bare 15 here, which no version switch could reach. It is
+    # also the single value SP 7:2026 is most reported to move, so of all the numbers in
+    # this module it is the one that must not be a literal.
+    fw = C.fire_water(e["code_version"])
+    fire_unread = C.unread_keys(fw)
+    water_warnings = []
+    if fire_unread:
+        # Domestic demand is IS 1172 and is unaffected, so the module still answers that.
+        # The fire reserve is not sized, and the sump it feeds is labelled as excluding it
+        # rather than quietly reported as if the reserve were zero.
+        tall = None
+        fire_reserve = fire_static = 0
+        water_warnings.append({"severity": "high", "message": (
+            f"Fire storage is not included in the sump: {C.version_label(e['code_version'])} "
+            f"has not been read, so neither the high-rise trigger nor the stored volume is "
+            f"known. Domestic and flushing demand below are IS 1172 and are unaffected.")})
+    else:
+        tall = b["height_m"] > fw["high_rise_above_m"]
+        fire_reserve = fw["reserve_in_sump_l"] if tall else 0
+        fire_static = fw["static_storage_l"] if tall else 0
     sump_l = total + fire_reserve
     d = float(e["sump_depth_m"])
     area = sump_l / 1000.0 / d
@@ -502,16 +527,24 @@ def m5_water(project, base, e):
     stp_kld = round(sewage / 1000.0, 2)
     stp_type = next(label for cap, label in C.STP_TYPES if stp_kld <= cap)
 
+    # The note beside the two fire figures names the trigger it was applied at, so a reader
+    # never has to assume 15 m. When the version is unread there is no trigger to name.
+    tall_note = ("threshold not read from " + C.version_label(e["code_version"])
+                 if fire_unread else f"buildings above {fw['high_rise_above_m']:g} m")
+
     return {
         "id": "water", "title": "Water Infrastructure", "codes": ["IS 1172:1993", "NBC 2016 Part 9", "NBC 2016 Part 4"],
-        "missing": missing,
+        "code_version": e["code_version"], "code_version_label": C.version_label(e["code_version"]),
+        "missing": missing + ([f"{C.version_label(e['code_version'])} fire storage provisions "
+                               f"— not read from the standard"] if fire_unread else []),
+        "warnings": water_warnings,
         "outputs": [
             out("Population", persons, "persons", "water_demand", "per-unit-type occupancy from Apartment Planning"),
             out("Domestic demand @135 lpcd", round(dom), "litre/day", "water_demand"),
             out("Flushing demand @45 lpcd", round(flush), "litre/day", "water_demand"),
             out("External / gardening @15 lpcd", round(ext), "litre/day", "water_demand"),
             out("Total daily demand", round(total), "litre/day", "water_demand"),
-            out("Fire reserve in sump", fire_reserve, "litre", "fire_water", "buildings above 15 m"),
+            out("Fire reserve in sump", fire_reserve, "litre", "fire_water", tall_note),
             out("Underground sump capacity", round(sump_l), "litre", "sump", "1 day demand + fire reserve"),
             out("Sump dimensions (L × B × D)", sump_dim, "", "sump", f"free board excluded, depth {d} m"),
             out("Overhead tank capacity", round(oht_l), "litre", "oht", "one-third of daily demand"),
@@ -519,7 +552,7 @@ def m5_water(project, base, e):
             out("Sewage generation", round(sewage), "litre/day", "sewage", "80% of water supply"),
             out("STP capacity", stp_kld, "KLD", "stp"),
             out("Dedicated fire static storage", fire_static, "litre", "fire_water",
-                "separate from domestic storage for buildings above 15 m"),
+                "separate from domestic storage; " + tall_note),
         ],
         "recommendation": {"label": "Recommended STP technology", "value": stp_type, "clause": C.clause("stp")},
         "derived": {"total_lpd": total, "stp_kld": stp_kld, "persons": persons,
@@ -670,24 +703,56 @@ def m8_fire(project, base, e):
     stair_width = tallest["stair_min_width"] if tallest else 0
     lifts = tallest["lift_count"] if tallest else 0
 
-    need_two_stairs = h > C.FIRE["two_stair_height_m"]
-    need_refuge = h > C.FIRE["refuge_above_m"]
-    refuge_floors = list(range(C.FIRE["refuge_every_floors"], floors + 1, C.FIRE["refuge_every_floors"])) if need_refuge else []
+    version = e["code_version"]
+    F = C.fire_table(version)
+    unread = C.unread_keys(F)
+    if unread:
+        # Refuse the module rather than check the part of it that happens to have numbers.
+        # A fire score of "3 of 8 passed" computed from a table that is half empty reads as
+        # a finding about the building; it is a finding about the table. Everything below
+        # would also raise on the first comparison against UNREAD, which is the sentinel
+        # doing its job -- this is the branch that turns that into an answer.
+        return {
+            "id": "fire", "title": f"Fire Safety Compliance ({C.version_label(version)})",
+            "codes": [C.CODE_VERSIONS[version]["title"]],
+            "code_version": version, "code_version_label": C.version_label(version),
+            "missing": missing + [
+                f"{C.version_label(version)} fire provisions — not read from the standard"],
+            "checks": [], "passed": 0, "total": 0, "score": None,
+            "unchecked": True, "unread_values": unread,
+            "floor_rows": [], "refuge_floors": [],
+            "warnings": [{"severity": "high", "message": (
+                f"Fire safety cannot be checked against {C.version_label(version)}: "
+                f"{len(unread)} threshold(s) have not been read from the standard "
+                f"({', '.join(unread)}). Switch the project's code version to "
+                f"{C.version_label(C.NBC_2016)} to check against the provisions state "
+                f"bye-laws currently reference, or read SP 7:2026 and set the values.")}],
+            "outputs": [
+                out("Building height", h, "m", "fire_stairs"),
+                out("Typical floor plate", round(plate, 1), "m²", "fire_ext"),
+                out("Checked against", C.version_label(version), "", None,
+                    "no threshold in this version has been read from the standard"),
+            ],
+        }
+
+    need_two_stairs = h > F["two_stair_height_m"]
+    need_refuge = h > F["refuge_above_m"]
+    refuge_floors = list(range(F["refuge_every_floors"], floors + 1, F["refuge_every_floors"])) if need_refuge else []
     car = e["fire_lift_car_m"]
-    need_fire_lift = h > C.FIRE["fire_lift_above_m"]
-    need_press = h > C.FIRE["pressurisation_above_m"]
-    ext_per_floor = math.ceil(plate / C.FIRE["extinguisher_per_sqm"]) if plate else 0
+    need_fire_lift = h > F["fire_lift_above_m"]
+    need_press = h > F["pressurisation_above_m"]
+    ext_per_floor = math.ceil(plate / F["extinguisher_per_sqm"]) if plate else 0
 
     checks = [
         # Label and threshold both derive from the constant — a hardcoded "22.5 m" in the
         # label survived the constant changing to 30 m and told the user the wrong rule.
-        check(f"Travel distance to nearest exit ≤ {C.FIRE['max_travel_m']:g} m",
-              travel <= C.FIRE["max_travel_m"] and travel > 0,
-              f"{travel} m", f"≤ {C.FIRE['max_travel_m']:g} m", "fire_travel"),
+        check(f"Travel distance to nearest exit ≤ {F['max_travel_m']:g} m",
+              travel <= F["max_travel_m"] and travel > 0,
+              f"{travel} m", f"≤ {F['max_travel_m']:g} m", "fire_travel"),
         check("Minimum 2 staircases above 24 m", (stair_count >= 2) if need_two_stairs else stair_count >= 1,
               stair_count, "≥ 2" if need_two_stairs else "≥ 1", "fire_stairs",
               f"building height {h} m"),
-        check("Staircase clear width ≥ 1.5 m", stair_width >= C.FIRE["stair_min_width_m"], f"{stair_width} m",
+        check("Staircase clear width ≥ 1.5 m", stair_width >= F["stair_min_width_m"], f"{stair_width} m",
               "≥ 1.5 m", "fire_stairs"),
         check("Refuge area every 7th floor above 24 m",
               (int(e["refuge_floors_provided"]) >= len(refuge_floors)) if need_refuge else True,
@@ -696,9 +761,10 @@ def m8_fire(project, base, e):
         check("Fire lift provided above 30 m", (lifts >= 1) if need_fire_lift else True, lifts,
               "≥ 1 fire lift" if need_fire_lift else "not applicable", "fire_lift"),
         check("Fire lift car ≥ 1.1 × 2.1 m (stretcher)",
-              (float(car[0]) >= C.FIRE["fire_lift_car"][0] and float(car[1]) >= C.FIRE["fire_lift_car"][1])
+              (float(car[0]) >= F["fire_lift_car"][0] and float(car[1]) >= F["fire_lift_car"][1])
               if need_fire_lift else True, f"{car[0]} × {car[1]} m", "≥ 1.1 × 2.1 m", "fire_lift"),
-        check("Stairwell pressurisation above 15 m", bool(e["stair_pressurisation"]) if need_press else True,
+        check(f"Stairwell pressurisation above {F['pressurisation_above_m']:g} m",
+              bool(e["stair_pressurisation"]) if need_press else True,
               "provided" if e["stair_pressurisation"] else "not provided",
               "required" if need_press else "not applicable", "fire_press"),
         # ceil(plate/200) >= 1 is true for any positive plate, so the old form was a free
@@ -708,7 +774,7 @@ def m8_fire(project, base, e):
               int(e["extinguishers_per_floor"]) >= ext_per_floor if plate else False,
               f"{e['extinguishers_per_floor']} provided per floor",
               f"{ext_per_floor} required per floor", "fire_ext",
-              f"floor plate {round(plate,1)} m² at 1 per {int(C.FIRE['extinguisher_per_sqm'])} m²"),
+              f"floor plate {round(plate,1)} m² at 1 per {int(F['extinguisher_per_sqm'])} m²"),
     ]
     passed = sum(1 for c in checks if c["status"] == "pass")
 
@@ -718,16 +784,18 @@ def m8_fire(project, base, e):
         floor_rows.append({
             "floor": f,
             "level_m": round((f - 1) * (tallest["floor_height"] if tallest else 3), 2),
-            "travel_ok": travel <= C.FIRE["max_travel_m"] and travel > 0,
+            "travel_ok": travel <= F["max_travel_m"] and travel > 0,
             "extinguishers": ext_per_floor,
             "refuge_required": is_refuge,
             "pressurisation": need_press,
-            "status": "pass" if (travel <= C.FIRE["max_travel_m"] and travel > 0 and ext_per_floor >= 1
+            "status": "pass" if (travel <= F["max_travel_m"] and travel > 0 and ext_per_floor >= 1
                                  and (not is_refuge or int(e["refuge_floors_provided"]) >= len(refuge_floors))) else "fail",
         })
 
     return {
         "id": "fire", "title": "Fire Safety Compliance (NBC Part 4)", "codes": ["NBC 2016 Part 4", "IS 2190"],
+        "code_version": version, "code_version_label": C.version_label(version),
+        "unchecked": False,
         "missing": missing, "checks": checks, "passed": passed, "total": len(checks),
         "score": round(passed / len(checks) * 100, 1) if checks else 0,
         "floor_rows": floor_rows, "refuge_floors": refuge_floors,
@@ -1156,6 +1224,10 @@ def analyse_engineering(project, base):
 
     return {
         "config": e,
+        # Every result carries the document it was checked against. A compliance figure
+        # without one is unreadable the moment more than one version exists, and from
+        # 30 April 2026 more than one does.
+        "code_version": C.CODE_VERSIONS[e["code_version"]],
         "city_reference": city,
         "modules": modules,
         "per_tower": per_tower,
