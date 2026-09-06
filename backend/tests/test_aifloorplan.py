@@ -140,3 +140,31 @@ def test_ai_floor_layout_fallback_or_generation():
     assert all("name" in r and "type" in r for r in rooms)
     assert "vastu" in validation or "score" in validation
 
+
+def test_standard_units_use_one_entry_and_a_private_bedroom_route():
+    """The deterministic planner must not turn every rendered door into an entrance."""
+    tower = default_tower("Tower Logical")
+    tower["units"] = [
+        {"type": "1bhk", "count": 1, "carpet_area": 55.0},
+        {"type": "2bhk", "count": 1, "carpet_area": 85.0},
+        {"type": "3bhk", "count": 1, "carpet_area": 130.0},
+    ]
+    rooms, _ = aifloorplan.generate_architectural_template(tower, floor=1)
+    by_unit = {}
+    for room in rooms:
+        if room.get("unit_id"):
+            by_unit.setdefault(room["unit_id"], []).append(room)
+
+    assert len(by_unit) == 3
+    for unit_rooms in by_unit.values():
+        assert sum(room.get("main_entrance") is True for room in unit_rooms) == 1
+        assert any(room["type"] == "living" and room.get("door_to") == "foyer"
+                   for room in unit_rooms)
+        assert all(room.get("door_to") == "passage" for room in unit_rooms
+                   if room["type"] == "bedroom")
+
+        habitable = [room for room in unit_rooms
+                     if room["type"] in {"living", "bedroom", "kitchen"}]
+        assert max(max(room["w"], room["h"]) / min(room["w"], room["h"])
+                   for room in habitable) <= 2.8
+

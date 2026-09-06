@@ -306,6 +306,27 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
               const isShaft = r.type === "shaft";
               const isPooja = r.type === "pooja";
               const hasWindow = r.has_window || r.type === "living" || r.type === "bedroom";
+              const target = r.door_to && validRooms.find((candidate) =>
+                candidate.unit_id === r.unit_id && candidate.id === `${r.unit_id}-${r.door_to}`
+              );
+              const mainEntry = r.main_entrance === true;
+              let doorEdge = null;
+              if (mainEntry) {
+                doorEdge = r.entry_edge || "S";
+              } else if (target) {
+                const tx = Number(target.x);
+                const ty = Number(target.y);
+                const tw = Number(target.w);
+                const th = Number(target.h);
+                const epsilon = 0.08;
+                if (Math.abs((xVal + wVal) - tx) < epsilon) doorEdge = "E";
+                else if (Math.abs(xVal - (tx + tw)) < epsilon) doorEdge = "W";
+                else if (Math.abs((yVal + hVal) - ty) < epsilon) doorEdge = "S";
+                else if (Math.abs(yVal - (ty + th)) < epsilon) doorEdge = "N";
+              }
+              const doorWidth = Math.min(32, doorEdge === "N" || doorEdge === "S" ? rw * 0.42 : rh * 0.42);
+              const doorX = doorEdge === "W" ? rx : doorEdge === "E" ? rx + rw : rx + rw / 2;
+              const doorY = doorEdge === "N" ? ry : doorEdge === "S" ? ry + rh : ry + rh / 2;
 
               return (
                 <g
@@ -346,17 +367,25 @@ export const FloorPlate = ({ rooms = [], selectedId, onSelect, corridor }) => {
                     />
                   )}
 
-                  {/* Door swing arc with clearance offset (100-150mm architrave clearance) */}
-                  {!isBalcony && !isTerrace && !isShaft && rw > 40 && rh > 40 && (
-                    <g opacity="0.65">
-                      <path
-                        d={`M ${rx + 5} ${ry + rh - 18} A 16 16 0 0 1 ${rx + 21} ${ry + rh - 2}`}
-                        fill="none"
-                        stroke="#64748B"
-                        strokeWidth="1"
-                        strokeDasharray="2 2"
-                      />
-                      <line x1={rx + 5} y1={ry + rh - 18} x2={rx + 5} y2={ry + rh - 2} stroke="#1E293B" strokeWidth="1.5" />
+                  {/* A door is drawn only when the generator has scheduled one.  The prior
+                      display put an identical doorway on every room, which made a unit look
+                      as though it had several entrances and hid the intended circulation. */}
+                  {doorEdge && !isBalcony && !isTerrace && !isShaft && (
+                    <g aria-label={mainEntry ? "Main entrance" : `Door to ${r.door_to}`}>
+                      {doorEdge === "N" || doorEdge === "S" ? (
+                        <>
+                          <line x1={doorX - doorWidth / 2} y1={doorY} x2={doorX + doorWidth / 2} y2={doorY} stroke="#FFFFFF" strokeWidth="4" />
+                          <line x1={doorX - doorWidth / 2} y1={doorY} x2={doorX + doorWidth / 2} y2={doorY} stroke={mainEntry ? "#2563EB" : "#475569"} strokeWidth={mainEntry ? "2.5" : "1.5"} />
+                          <path d={`M ${doorX - doorWidth / 2} ${doorY} A ${doorWidth} ${doorWidth} 0 0 ${doorEdge === "N" ? 0 : 1} ${doorX + doorWidth / 2} ${doorY + (doorEdge === "N" ? doorWidth * 0.55 : -doorWidth * 0.55)}`} fill="none" stroke="#94A3B8" strokeWidth="1" strokeDasharray="2 2" />
+                        </>
+                      ) : (
+                        <>
+                          <line x1={doorX} y1={doorY - doorWidth / 2} x2={doorX} y2={doorY + doorWidth / 2} stroke="#FFFFFF" strokeWidth="4" />
+                          <line x1={doorX} y1={doorY - doorWidth / 2} x2={doorX} y2={doorY + doorWidth / 2} stroke={mainEntry ? "#2563EB" : "#475569"} strokeWidth={mainEntry ? "2.5" : "1.5"} />
+                          <path d={`M ${doorX} ${doorY - doorWidth / 2} A ${doorWidth} ${doorWidth} 0 0 ${doorEdge === "W" ? 1 : 0} ${doorX + (doorEdge === "W" ? doorWidth * 0.55 : -doorWidth * 0.55)} ${doorY + doorWidth / 2}`} fill="none" stroke="#94A3B8" strokeWidth="1" strokeDasharray="2 2" />
+                        </>
+                      )}
+                      {mainEntry && <text x={doorX} y={doorY - 7} textAnchor="middle" fontSize="7.5" fontWeight="700" fill="#1D4ED8">MAIN ENTRY</text>}
                     </g>
                   )}
 

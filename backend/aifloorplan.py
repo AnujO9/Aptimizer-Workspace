@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import vastu
+from floorplan.realistic import generate_unit as generate_realistic_unit
 
 logger = logging.getLogger(__name__)
 
@@ -280,16 +281,31 @@ def generate_architectural_template(tower: Dict[str, Any], floor: int) -> Tuple[
     # A flat is proportioned to its own carpet area; the row is as deep as its deepest flat
     # so both rows meet the corridor on a straight line.
     def dims(u):
-        """A flat is proportioned to its programme, not to a square.
+        """Choose a usable depth before asking a room planner to divide the unit.
 
-        Sizing from carpet area alone gives every tier the same aspect, so a five-bedroom
-        penthouse comes out as deep as it is wide — and then eight rooms have to share the
-        frontage of a two-bedroom flat. Real corridor-served flats get wider as they get
-        bigger, because every habitable room needs its own piece of facade. The width is
-        therefore the greater of the square proportion and what the room count actually
-        needs; the depth follows from the area.
+        The former full-depth-column packer made an 85 m2 two-bedroom unit roughly 20.5 m
+        wide and only 7 m deep. Every room then became a long strip by construction. The
+        realistic planner needs enough depth for a foyer, living zone and private passage,
+        so standard 1-3BHK units receive a compact, practical envelope first.
         """
         prog = vastu.unit_programme(u["type"], u["carpet"])
+        if prog["beds"] <= 5:
+            # Larger homes get more circulation and service allowance, but still preserve
+            # enough suite width for one bedroom plus one attached bath per bedroom.
+            gross = u["carpet"] * (1.18 if prog["beds"] <= 3 else 1.28)
+            if prog["beds"] == 1:
+                # A studio-sized unit still needs a real entry sequence; below this depth
+                # a foyer plus living room collapses into a single strip.
+                return max(round(math.sqrt(gross * 1.15), 1), 9.0), 9.0
+            # At least 4.8 m per bedroom suite gives beds and baths enough width without
+            # forcing the facade into a line of narrow, full-depth boxes.
+            w = max(math.sqrt(gross * 1.15), prog["beds"] * 4.8)
+            h = gross / w
+            min_depth = {2: 9.2, 3: 9.8, 4: 10.5, 5: 11.2}[prog["beds"]]
+            return round(w, 1), round(max(h, min_depth), 1)
+
+        # Large/penthouse programmes retain the legacy packer until the full multi-zone
+        # generator is enabled for their service and secondary-entry requirements.
         # bedrooms + living + kitchen, each wanting a column on the facade.
         facade_rooms = prog["beds"] + 2 + (1 if prog["is_penthouse"] else 0)
         # The columns are not equal: the master, the living room and the kitchen are wider
@@ -330,8 +346,12 @@ def generate_architectural_template(tower: Dict[str, Any], floor: int) -> Tuple[
                 exterior.append("W")
             if idx == last:
                 exterior.append("E")
-            packed, notes = vastu.pack_unit(box, u["type"], u["carpet"], entry_edge,
-                                            exterior, uid, idx)
+            packed, notes = generate_realistic_unit(box, u["type"], u["carpet"], entry_edge,
+                                                    uid, idx, exterior)
+            if not packed:
+                packed, legacy_notes = vastu.pack_unit(box, u["type"], u["carpet"], entry_edge,
+                                                        exterior, uid, idx)
+                notes = notes + legacy_notes
             rooms.extend(packed)
             unit_boxes[uid] = box
             unit_meta[uid] = {"entry_edge": entry_edge, "exterior_edges": exterior,

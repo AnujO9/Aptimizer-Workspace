@@ -155,6 +155,24 @@ CLAUSES = {
     "griha": {"code": "GRIHA v2019", "clause": "Rating criteria", "topic": "GRIHA star rating thresholds"},
     "igbc": {"code": "IGBC Green Homes v3.0", "clause": "Rating criteria", "topic": "IGBC certification levels"},
     "grid": {"code": "IS 3861:2002", "clause": "Cl. 4", "topic": "Modular planning grid for apartments"},
+    # The four room-minima clauses. `verified: False` is additive — clause() returns
+    # {**c, ...}, so the flag passes straight through to the UI with no change to clause()
+    # itself, and existing entries that carry no flag are read as c.get("verified", True).
+    # The sub-clause is named as unverified rather than guessed: this is the first citation
+    # in the registry that cannot be pinned, and saying so is the point.
+    "room_min_area": {"code": "NBC 2016 Part 3",
+                      "clause": "Part 3, Sec. 1 — Development Control (sub-clause not verified)",
+                      "topic": "Minimum area of habitable rooms, kitchens and toilets", "verified": False},
+    "room_min_width": {"code": "NBC 2016 Part 3",
+                       "clause": "Part 3, Sec. 1 — Development Control (sub-clause not verified)",
+                       "topic": "Minimum clear width of habitable rooms and kitchens", "verified": False},
+    "room_min_height": {"code": "NBC 2016 Part 3",
+                        "clause": "Part 3, Sec. 1 — Development Control (sub-clause not verified)",
+                        "topic": "Minimum clear height of habitable rooms and toilets", "verified": False},
+    "room_light_vent": {"code": "NBC 2016 Part 8, Sec. 1",
+                        "clause": "Part 8, Sec. 1 — Lighting and Ventilation (sub-clause not verified)",
+                        "topic": "Window area as a fraction of floor area; openable fraction; toilet vent opening",
+                        "verified": False},
 }
 
 # ---------------------------------------------------------------- IS 875 Part 1
@@ -362,6 +380,58 @@ ACCESS = {
     "ramp_slope": 1 / 12, "door_width_mm": 900, "corridor_min_mm": 1200, "corridor_pref_mm": 1500,
     "lift_car_mm": (1100, 1400), "handrail_mm": (760, 900),
 }
+
+# ---------------------------------------------------------------- NBC Part 3 / IS 3861 room minima
+# The four figures this platform already publishes as code numbers — on the is3861 card in
+# CODE_LIBRARY and in layout.ROOM_SCHEMA — move here so the card and the checker read one
+# constant. That is the same fix the nbc4 card comment describes: the card must not be able
+# to say anything the engine is not checking. Everything the platform does NOT already
+# assert stays UNREAD rather than being filled from the floor-plan rule book, because a rule
+# book is not a standard and a number sourced from one would carry a clause's authority with
+# no clause behind it.
+#
+# The inclusion test, stated once so a future editor can apply it: a value enters this table
+# as a number only if this platform already asserts it as an NBC/IS figure somewhere a user
+# can see. That is true of exactly four — 9.5 (is3861 card + layout.ROOM_SCHEMA living and
+# bedroom min_area), 5.5 (same, kitchen), 1.8 (same, bathroom), 2400 (the card says "min
+# width 2.4 m"; layout.ROOM_SCHEMA bedroom min_dim). Everything else is UNREAD. The
+# comment beside each unread key records what the rule book claims, so whoever opens Part 3
+# knows which number they are there to confirm or contradict — it is a lead, not a value.
+ROOM_MINIMA_VERIFIED = False   # no controlled copy of Part 3 has been read; mirrors WIND_CF_VERIFIED
+
+_ROOM_NBC_2016 = {
+    "habitable_min_area_sqm":            9.5,      # single-room dwelling
+    "habitable_min_area_multi_sqm":      UNREAD,   # two-or-more-room dwelling (book says 7.5)
+    "habitable_min_width_mm":            2400,
+    "habitable_min_height_mm":           UNREAD,   # book says 2750
+    "kitchen_min_area_sqm":              5.5,
+    "kitchen_min_width_mm":              UNREAD,   # book says 1800
+    "kitchen_with_dining_min_area_sqm":  UNREAD,   # book says 7.5
+    "bath_min_area_sqm":                 1.8,
+    "bath_min_width_mm":                 UNREAD,   # book says 1200
+    "wc_min_area_sqm":                   UNREAD,   # book says 1.1
+    "wc_min_width_mm":                   UNREAD,   # book says 900
+    "combined_toilet_min_area_sqm":      UNREAD,   # book says 2.8
+    "toilet_min_height_mm":              UNREAD,   # book says 2400
+    "window_area_ratio":                 UNREAD,   # book says 1/10, 1/6 hot-humid (Part 8)
+    "window_openable_fraction":          UNREAD,   # book says 0.5
+    "toilet_vent_min_area_sqm":          UNREAD,   # book says 0.3
+}
+
+# Every value UNREAD, for the same reason _FIRE_SP7_2026 is: SP 7:2026 has not been read.
+_ROOM_SP7_2026 = {k: UNREAD for k in _ROOM_NBC_2016}
+
+ROOM_BY_VERSION = {NBC_2016: _ROOM_NBC_2016, SP7_2026: _ROOM_SP7_2026}
+
+# Legacy alias, exactly as FIRE = _FIRE_NBC_2016. Anything that varies with the project's
+# chosen version must call room_minima() instead of reading this name.
+ROOM = _ROOM_NBC_2016
+
+
+def room_minima(version=None):
+    """Room dimension minima for a code version. Unread entries are UNREAD, never a number."""
+    return ROOM_BY_VERSION[code_version(version)]
+
 
 # ---------------------------------------------------------------- green rating
 GREEN_CHECKLIST = [
@@ -644,8 +714,17 @@ CODE_LIBRARY = [
      "key_value": "Minimum depth 0.5 m below NGL; footing type by load and soil", "clause": "Cl. 5, 6.1"},
     {"id": "is3764", "code": "IS 3764:1992 / NBC Part 9", "topic": "Storm water drainage",
      "key_value": "Rational method Q = CIA/360; C = 0.85 RCC roof; velocity 0.6–3.0 m/s", "clause": "Cl. 4.3, 4.4"},
-    {"id": "is3861", "code": "IS 3861:2002", "topic": "Method of measurement / apartment planning minimums",
-     "key_value": "Habitable room min 9.5 m², kitchen 5.5 m², bath 1.8 m², min width 2.4 m", "clause": "Cl. 4"},
+    # Formatted from _ROOM_NBC_2016 for the reason the nbc4 comment below gives: the card
+    # sits beside the floor-plan room check that reads the same table, and a literal here
+    # would drift from it the moment one of the four is corrected. Plain {key} and never
+    # {key:g} — _Unread has no __format__, so a future edit that unreads one of these
+    # prints "UNREAD" instead of raising TypeError at import and taking the app down.
+    {"id": "is3861", "code": "IS 3861:2002 / NBC 2016 Part 3",
+     "topic": "Method of measurement / apartment planning minimums",
+     "key_value": ("Habitable room min {habitable_min_area_sqm} m², kitchen "
+                   "{kitchen_min_area_sqm} m², bath {bath_min_area_sqm} m², min width "
+                   "{habitable_min_width_mm} mm").format(**_ROOM_NBC_2016),
+     "clause": "Cl. 4"},
     {"id": "is3534", "code": "IS 3534 / NBC Part 3", "topic": "Lift car dimensions for accessibility",
      "key_value": "Minimum accessible lift car 1100 × 1400 mm, door 900 mm", "clause": "Cl. 13.7"},
     {"id": "nbc3", "code": "NBC 2016 Part 3", "topic": "Development control, FAR, setbacks, accessibility",
@@ -715,6 +794,12 @@ CLAUSE_LIBRARY = {
     "storm_rational": "is3764", "rwh": "nbc9", "parking_ecs": "nbc8", "parking_aisle": "nbc8",
     "parking_accessible": "rpwd", "parking_ev": "bee_ev", "parking_2w": "nbc8", "fire_ext": "nbc4",
     "acc_tactile": "nbc3", "griha": "griha", "igbc": "griha",
+    # The room minima cite NBC Part 3, but the card a reader wants is is3861 — it is the one
+    # that prints the four numbers. room_light_vent cites "NBC 2016 Part 8, Sec. 1", which
+    # the prefix split cannot match to the nbc8 card ("NBC 2016 Part 8 / SP:21"), so it is
+    # mapped here rather than left with a null library_id and a citation that goes nowhere.
+    "room_min_area": "is3861", "room_min_width": "is3861", "room_min_height": "is3861",
+    "room_light_vent": "nbc8",
 }
 
 
