@@ -13,6 +13,7 @@ import Admin from "./pages/Admin";
 import PublicCompliance from "./pages/PublicCompliance";
 import AsmrBackgroundDemo from "./components/AsmrBackgroundDemo";
 import AppBackground from "./components/AppBackground";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const Protected = ({ children }) => {
   const { user } = useAuth();
@@ -78,6 +79,7 @@ function App() {
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" />
+        <SpeedInsights />
       </AuthProvider>
     </div>
   );
