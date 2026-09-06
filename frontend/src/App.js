@@ -13,6 +13,7 @@ import Admin from "./pages/Admin";
 import PublicCompliance from "./pages/PublicCompliance";
 import AsmrBackgroundDemo from "./components/AsmrBackgroundDemo";
 import AppBackground from "./components/AppBackground";
+import { Analytics } from "@vercel/analytics/react";
 
 const Protected = ({ children }) => {
   const { user } = useAuth();
@@ -79,6 +80,7 @@ function App() {
         </BrowserRouter>
         <Toaster position="top-right" />
       </AuthProvider>
+      <Analytics />
     </div>
   );
 }
