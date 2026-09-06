@@ -5,7 +5,10 @@ services:
     name: aptimizer
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter          # "free" also works, but sleeps after 15 min idle
+    region: singapore      # closest Render region to India; default is Oregon
+    # Free sleeps after 15 min idle and takes ~1 min to wake, and the workspace gets
+    # 750 instance hours a month. Move to "starter" once the demo needs to stay warm.
+    plan: free
     healthCheckPath: /api/
     envVars:
       # Paste the MongoDB Atlas connection string here in the Render dashboard.
